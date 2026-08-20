@@ -2,9 +2,10 @@
 /* eslint-disable @next/next/no-img-element */
 
 import {
-  AlertTriangle, Building2, CalendarDays, CheckCircle2, ChevronRight, Clock3, Hash,
-  Home, ImagePlus, Loader2, LogOut, Menu, MessageCircle, Plus, Send, Settings,
-  ShieldCheck, Sparkles, Trash2, UserPlus, Users, Video, X,
+  AlertTriangle, ArrowRight, BriefcaseBusiness, Building2, CalendarDays, Check,
+  CheckCircle2, ChevronRight, Clock3, Eye, EyeOff, Hash, Home, ImagePlus, Loader2,
+  LockKeyhole, LogOut, Mail, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck,
+  Sparkles, Trash2, UserPlus, Users, Video, X,
 } from "lucide-react";
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -12,7 +13,7 @@ import {
 } from "./lib/meetflow-api";
 
 const SESSION_KEY = "meetflow.local.session";
-type Session = { token: string; user: AuthUser };
+type Session = { token: string; user: AuthUser; remember: boolean };
 type View = "inicio" | "agenda" | "chat" | "status" | "equipe" | "configuracoes";
 type Modal = "meeting" | "channel" | "status" | "member" | "delete" | null;
 
@@ -61,21 +62,25 @@ export default function LocalApp() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(SESSION_KEY);
+    const local = window.localStorage.getItem(SESSION_KEY);
+    const temporary = window.sessionStorage.getItem(SESSION_KEY);
+    const raw = local ?? temporary;
     if (!raw) { queueMicrotask(() => setSession(null)); return; }
     try {
       const saved = JSON.parse(raw) as Session;
-      meetFlowApi.authenticated(saved.token).me().then((user) => setSession({ token: saved.token, user }))
-        .catch(() => { window.localStorage.removeItem(SESSION_KEY); setSession(null); });
+      meetFlowApi.authenticated(saved.token).me().then((user) => setSession({ token: saved.token, user, remember: local !== null }))
+        .catch(() => { window.localStorage.removeItem(SESSION_KEY); window.sessionStorage.removeItem(SESSION_KEY); setSession(null); });
     } catch {
       window.localStorage.removeItem(SESSION_KEY);
+      window.sessionStorage.removeItem(SESSION_KEY);
       queueMicrotask(() => setSession(null));
     }
   }, []);
 
   const saveSession = (next: Session | null) => {
-    if (next) window.localStorage.setItem(SESSION_KEY, JSON.stringify(next));
-    else window.localStorage.removeItem(SESSION_KEY);
+    window.localStorage.removeItem(SESSION_KEY);
+    window.sessionStorage.removeItem(SESSION_KEY);
+    if (next) (next.remember ? window.localStorage : window.sessionStorage).setItem(SESSION_KEY, JSON.stringify(next));
     setSession(next);
   };
 
@@ -92,19 +97,42 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
   const [mode, setMode] = useState<"login" | "register">("login");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [avatar, setAvatar] = useState<File>();
+  const [dialog, setDialog] = useState<"terms" | "privacy" | "recovery" | null>(null);
+
+  const passwordChecks = [
+    { label: "10 caracteres", valid: password.length >= 10 },
+    { label: "letra maiúscula", valid: /[A-Z]/.test(password) },
+    { label: "número", valid: /\d/.test(password) },
+  ];
+
+  function changeMode(next: "login" | "register") {
+    setMode(next); setError(""); setPassword(""); setConfirmation(""); setAvatar(undefined); setShowPassword(false);
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true); setError("");
     const form = new FormData(event.currentTarget);
     try {
-      const result = mode === "login"
-        ? await meetFlowApi.login(String(form.get("email")), String(form.get("password")))
-        : await meetFlowApi.register({
-            name: String(form.get("name")), email: String(form.get("email")),
-            password: String(form.get("password")), organizationName: String(form.get("organizationName")),
-          });
-      onAuthenticated(result);
+      if (mode === "register" && password !== confirmation) throw new Error("As senhas informadas não são iguais");
+      if (mode === "register" && !passwordChecks.every((item) => item.valid)) throw new Error("Crie uma senha que atenda a todos os requisitos");
+      if (mode === "login") {
+        const remember = form.get("remember") === "on";
+        const result = await meetFlowApi.login(String(form.get("email")), password, remember);
+        onAuthenticated({ ...result, remember });
+      } else {
+        const result = await meetFlowApi.register({
+          name: String(form.get("name")), jobTitle: String(form.get("jobTitle")),
+          email: String(form.get("email")), password,
+          organizationName: String(form.get("organizationName")), acceptTerms: form.get("acceptTerms") === "on",
+        });
+        const user = avatar ? await meetFlowApi.authenticated(result.token).uploadAvatar(avatar).catch(() => result.user) : result.user;
+        onAuthenticated({ ...result, user, remember: true });
+      }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível continuar"); }
     finally { setBusy(false); }
   }
@@ -113,23 +141,24 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
     <main className="local-auth-shell">
       <aside className="local-auth-aside">
         <a className="brand" href="#"><span className="brand-mark"><Sparkles /></span>MeetFlow</a>
-        <div><span className="hero-pill"><span /> AMBIENTE EMPRESARIAL</span><h1>Sua empresa conectada, organizada e em movimento.</h1><p>Reuniões, conversas, colaboradores e atualizações em um workspace privado com dados persistentes.</p></div>
-        <footer><ShieldCheck /> Seus dados ficam isolados por empresa</footer>
+        <div className="auth-presentation"><span className="hero-pill"><span /> AMBIENTE EMPRESARIAL</span><h1>Onde equipes transformam conversas em movimento.</h1><p>Reuniões, chat, colaboradores e atualizações em um único workspace seguro.</p><div className="auth-benefits"><span><CheckCircle2 /> Dados separados por empresa</span><span><CheckCircle2 /> Contas individuais para a equipe</span><span><CheckCircle2 /> Informações salvas na nuvem</span></div></div>
+        <footer><ShieldCheck /> Ambiente protegido e conectado ao PostgreSQL</footer>
       </aside>
       <section className="local-auth-card">
-        <div className="auth-tabs"><button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>Entrar</button><button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>Criar empresa</button></div>
-        <span className="section-kicker">{mode === "login" ? "BEM-VINDO DE VOLTA" : "COMECE SEU WORKSPACE"}</span>
-        <h2>{mode === "login" ? "Acesse sua conta" : "Cadastre sua empresa"}</h2>
-        <p>{mode === "login" ? "Entre com o e-mail e a senha cadastrados." : "Você será o primeiro administrador da empresa."}</p>
+        <div className="auth-tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => changeMode("login")}>Entrar</button><button type="button" role="tab" aria-selected={mode === "register"} className={mode === "register" ? "active" : ""} onClick={() => changeMode("register")}>Criar empresa</button></div>
+        <div className="auth-heading"><span className="auth-secure"><LockKeyhole /> ACESSO SEGURO</span><h2>{mode === "login" ? "Bem-vindo de volta" : "Crie seu workspace"}</h2><p>{mode === "login" ? "Use os dados cadastrados para acessar sua empresa." : "Configure sua conta de administrador em poucos passos."}</p></div>
         {error && <div className="form-error">{error}</div>}
-        <form onSubmit={submit}>
-          {mode === "register" && <><label>Seu nome<input name="name" required maxLength={120} placeholder="Matheus Costa" /></label><label>Nome da empresa<input name="organizationName" required maxLength={120} placeholder="Minha Empresa" /></label></>}
-          <label>E-mail profissional<input name="email" required type="email" autoComplete="email" placeholder="voce@empresa.com" /></label>
-          <label>Senha<input name="password" required type="password" minLength={8} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="Mínimo de 8 caracteres" /></label>
-          <button className="button button-primary button-wide" disabled={busy}>{busy ? <Loader2 className="spin" /> : mode === "login" ? "Entrar no MeetFlow" : "Criar workspace"}</button>
+        <form className={`auth-form auth-form-${mode}`} onSubmit={submit}>
+          {mode === "register" && <><div className="auth-form-section"><span>1</span><div><strong>Seus dados</strong><small>Perfil do administrador</small></div></div><div className="auth-field-grid"><label>Nome completo<div className="input-with-icon"><Users /><input name="name" required maxLength={120} autoComplete="name" placeholder="Seu nome completo" /></div></label><label>Cargo<div className="input-with-icon"><BriefcaseBusiness /><input name="jobTitle" required maxLength={120} placeholder="Ex.: Diretor comercial" /></div></label></div><div className="auth-form-section"><span>2</span><div><strong>Dados da empresa</strong><small>Workspace privado</small></div></div><label>Nome da empresa<div className="input-with-icon"><Building2 /><input name="organizationName" required maxLength={120} autoComplete="organization" placeholder="Nome da sua empresa" /></div></label></>}
+          <label>E-mail profissional<div className="input-with-icon"><Mail /><input name="email" required type="email" autoComplete="email" inputMode="email" placeholder="voce@empresa.com" /></div></label>
+          <div className={mode === "register" ? "auth-field-grid" : ""}><label>Senha<div className="input-with-icon"><LockKeyhole /><input name="password" required type={showPassword ? "text" : "password"} minLength={mode === "register" ? 10 : 8} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={mode === "login" ? "Digite sua senha" : "Crie uma senha forte"} /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff /> : <Eye />}</button></div></label>{mode === "register" && <label>Confirmar senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repita a senha" /></div></label>}</div>
+          {mode === "register" && <><div className="password-strength"><div><span style={{ width: `${passwordChecks.filter((item) => item.valid).length / passwordChecks.length * 100}%` }} /></div><small>{passwordChecks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><label className="avatar-register"><span className="avatar avatar-fallback">{avatar ? <ImagePlus /> : "MF"}</span><div><strong>Foto de perfil <em>opcional</em></strong><small>{avatar?.name ?? "JPG, PNG ou WebP, até 3,5 MB"}</small></div><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setAvatar(event.target.files?.[0])} /></label><label className="auth-check"><input name="acceptTerms" type="checkbox" required /><span>Aceito os <button type="button" onClick={() => setDialog("terms")}>Termos de Uso</button> e a <button type="button" onClick={() => setDialog("privacy")}>Política de Privacidade</button>.</span></label></>}
+          {mode === "login" && <div className="login-options"><label className="auth-check"><input name="remember" type="checkbox" /><span>Manter conectado neste dispositivo</span></label><button type="button" onClick={() => setDialog("recovery")}>Esqueci minha senha</button></div>}
+          <button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>{mode === "login" ? "Entrar no MeetFlow" : "Criar meu workspace"}<ArrowRight /></>}</button>
         </form>
-        <small><CheckCircle2 /> Conta real conectada ao PostgreSQL</small>
+        <small><ShieldCheck /> Seus dados são protegidos e não aparecem para outras empresas</small>
       </section>
+      {dialog && <div className="auth-dialog-backdrop" role="presentation" onMouseDown={() => setDialog(null)}><section className="auth-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><span><ShieldCheck /></span><button onClick={() => setDialog(null)} aria-label="Fechar"><X /></button></header>{dialog === "terms" && <><h3>Termos de Uso</h3><p>Ao criar um workspace, você declara que fornecerá informações verdadeiras, manterá suas credenciais protegidas e utilizará o MeetFlow de forma legal e responsável.</p><p>A empresa administradora é responsável pelas contas de colaboradores e pelos conteúdos publicados em seu ambiente.</p></>}{dialog === "privacy" && <><h3>Política de Privacidade</h3><p>Contas, reuniões, mensagens e mídias são armazenadas para operar o workspace. Cada registro é vinculado à empresa autenticada e não é exibido a outros workspaces.</p><p>Senhas são armazenadas com hash seguro e nunca ficam disponíveis em texto aberto.</p></>}{dialog === "recovery" && <><h3>Recuperação de acesso</h3><p>Enquanto o envio automático de e-mail não estiver configurado, solicite a um administrador da sua empresa a recuperação da conta.</p><p>Se você for o único administrador, use a alteração de senha enquanto ainda estiver conectado.</p></>}<button className="button button-dark button-wide" onClick={() => setDialog(null)}>Entendi</button></section></div>}
     </main>
   );
 }
@@ -177,7 +206,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
   function switchView(next: View) { setView(next); setSidebar(false); }
   function replaceUser(next: AuthUser) {
     setUser(next);
-    onSession({ token: session.token, user: next });
+    onSession({ token: session.token, user: next, remember: session.remember });
   }
   function logout() { onSession(null); }
 
@@ -261,7 +290,7 @@ function ProfileSettings({ user, api, onUser, onLogout, onDelete, onError }: { u
   async function update(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(false); const form = new FormData(event.currentTarget); try { onUser(await api.updateProfile({ name: String(form.get("name")), jobTitle: String(form.get("jobTitle")), organizationName: String(form.get("organizationName")) })); setSaved(true); } catch (reason) { onError(reason); } }
   async function avatar(file?: File) { if (!file) return; try { onUser(await api.uploadAvatar(file)); } catch (reason) { onError(reason); } }
   async function password(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setPasswordSaved(false); const form = new FormData(event.currentTarget); try { await api.changePassword(String(form.get("currentPassword")), String(form.get("newPassword"))); event.currentTarget.reset(); setPasswordSaved(true); } catch (reason) { onError(reason); } }
-  return <section className="subpage"><div className="page-head"><div><span className="section-kicker">SUA CONTA</span><h2>Configurações</h2><p>Atualize seus dados, foto e preferências de acesso.</p></div></div><div className="settings-layout"><nav><button className="active"><Users /> Perfil</button><button onClick={onLogout}><LogOut /> Sair da conta</button></nav><div className="settings-stack"><section className="panel settings-panel"><div className="panel-head"><div><span className="section-kicker">IDENTIDADE</span><h3>Perfil profissional</h3></div>{saved && <span className="save-success"><CheckCircle2 /> Salvo</span>}</div><div className="avatar-editor"><Avatar name={user.name} url={user.avatarUrl} api={api} /><label><ImagePlus /> Alterar foto<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void avatar(event.target.files?.[0])} /></label><span>JPG, PNG ou WebP, com até 3,5 MB na hospedagem gratuita.</span></div><form className="settings-form" onSubmit={update}><label>Nome completo<input name="name" required defaultValue={user.name} maxLength={120} /></label><label>Cargo<input name="jobTitle" required defaultValue={user.jobTitle} maxLength={120} /></label><label>E-mail<div className="readonly-input">{user.email}</div></label><label>Empresa<input name="organizationName" required defaultValue={user.organizationName} maxLength={120} readOnly={user.role !== "ADMIN"} /></label><div className="settings-actions"><button className="button button-primary">Salvar alterações</button><button type="button" className="button button-soft" onClick={onLogout}>Sair</button></div></form></section><section className="panel password-panel"><div className="panel-head"><div><span className="section-kicker">SEGURANÇA</span><h3>Alterar senha</h3></div>{passwordSaved && <span className="save-success"><CheckCircle2 /> Senha alterada</span>}</div><form onSubmit={password}><label>Senha atual<input name="currentPassword" type="password" required /></label><label>Nova senha<input name="newPassword" type="password" required minLength={8} /></label><button className="button button-dark">Atualizar senha</button></form></section><div className="danger-zone"><AlertTriangle /><div><strong>Excluir minha conta</strong><p>Desativa seu acesso permanentemente sem apagar o histórico empresarial.</p></div><button onClick={onDelete}>Excluir conta</button></div></div></div></section>;
+  return <section className="subpage"><div className="page-head"><div><span className="section-kicker">SUA CONTA</span><h2>Configurações</h2><p>Atualize seus dados, foto e preferências de acesso.</p></div></div><div className="settings-layout"><nav><button className="active"><Users /> Perfil</button><button onClick={onLogout}><LogOut /> Sair da conta</button></nav><div className="settings-stack"><section className="panel settings-panel"><div className="panel-head"><div><span className="section-kicker">IDENTIDADE</span><h3>Perfil profissional</h3></div>{saved && <span className="save-success"><CheckCircle2 /> Salvo</span>}</div><div className="avatar-editor"><Avatar name={user.name} url={user.avatarUrl} api={api} /><label><ImagePlus /> Alterar foto<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void avatar(event.target.files?.[0])} /></label><span>JPG, PNG ou WebP, com até 3,5 MB na hospedagem gratuita.</span></div><form className="settings-form" onSubmit={update}><label>Nome completo<input name="name" required defaultValue={user.name} maxLength={120} /></label><label>Cargo<input name="jobTitle" required defaultValue={user.jobTitle} maxLength={120} /></label><label>E-mail<div className="readonly-input">{user.email}</div></label><label>Empresa<input name="organizationName" required defaultValue={user.organizationName} maxLength={120} readOnly={user.role !== "ADMIN"} /></label><div className="settings-actions"><button className="button button-primary">Salvar alterações</button><button type="button" className="button button-soft" onClick={onLogout}>Sair</button></div></form></section><section className="panel password-panel"><div className="panel-head"><div><span className="section-kicker">SEGURANÇA</span><h3>Alterar senha</h3></div>{passwordSaved && <span className="save-success"><CheckCircle2 /> Senha alterada</span>}</div><form onSubmit={password}><label>Senha atual<input name="currentPassword" type="password" required /></label><label>Nova senha<input name="newPassword" type="password" required minLength={10} placeholder="10 caracteres, maiúscula e número" /></label><button className="button button-dark">Atualizar senha</button></form></section><div className="danger-zone"><AlertTriangle /><div><strong>Excluir minha conta</strong><p>Desativa seu acesso permanentemente sem apagar o histórico empresarial.</p></div><button onClick={onDelete}>Excluir conta</button></div></div></div></section>;
 }
 
 function MeetingModal({ members, onClose, onSave, onError }: { members: TeamMember[]; onClose: () => void; onSave: (input: Record<string, unknown>) => Promise<void>; onError: (reason: unknown) => void }) {
@@ -283,7 +312,7 @@ function StatusModal({ onClose, onSave, onError }: { onClose: () => void; onSave
 }
 
 function MemberModal({ onClose, onSave, onError }: { onClose: () => void; onSave: (input: { name: string; email: string; password: string; jobTitle: string; role: "ADMIN" | "MEMBER" }) => Promise<void>; onError: (reason: unknown) => void }) {
-  return <SimpleModal title="Novo colaborador" kicker="CONTA DA EQUIPE" onClose={onClose} onError={onError} onSubmit={async (form) => onSave({ name: String(form.get("name")), email: String(form.get("email")), password: String(form.get("password")), jobTitle: String(form.get("jobTitle")), role: String(form.get("role")) as "ADMIN" | "MEMBER" })}><div className="form-row two"><label>Nome<input name="name" required maxLength={120} /></label><label>Cargo<input name="jobTitle" required maxLength={120} placeholder="Analista comercial" /></label></div><label>E-mail<input name="email" type="email" required /></label><label>Senha inicial<input name="password" type="password" required minLength={8} placeholder="Mínimo de 8 caracteres" /></label><label>Permissão<select name="role"><option value="MEMBER">Colaborador</option><option value="ADMIN">Administrador</option></select></label><div className="modal-note"><ShieldCheck /> A pessoa poderá entrar imediatamente usando este e-mail e senha.</div></SimpleModal>;
+  return <SimpleModal title="Novo colaborador" kicker="CONTA DA EQUIPE" onClose={onClose} onError={onError} onSubmit={async (form) => onSave({ name: String(form.get("name")), email: String(form.get("email")), password: String(form.get("password")), jobTitle: String(form.get("jobTitle")), role: String(form.get("role")) as "ADMIN" | "MEMBER" })}><div className="form-row two"><label>Nome<input name="name" required maxLength={120} /></label><label>Cargo<input name="jobTitle" required maxLength={120} placeholder="Analista comercial" /></label></div><label>E-mail<input name="email" type="email" required /></label><label>Senha inicial<input name="password" type="password" required minLength={10} placeholder="10 caracteres, maiúscula e número" /></label><label>Permissão<select name="role"><option value="MEMBER">Colaborador</option><option value="ADMIN">Administrador</option></select></label><div className="modal-note"><ShieldCheck /> A pessoa poderá entrar imediatamente usando este e-mail e senha.</div></SimpleModal>;
 }
 
 function DeleteModal({ onClose, onDelete, onError }: { onClose: () => void; onDelete: () => Promise<void>; onError: (reason: unknown) => void }) {

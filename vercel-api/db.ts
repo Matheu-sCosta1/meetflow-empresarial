@@ -48,11 +48,19 @@ const schema = [
     role VARCHAR(20) NOT NULL,
     job_title VARCHAR(120) NOT NULL DEFAULT 'Colaborador',
     avatar_url VARCHAR(500),
+    terms_accepted_at TIMESTAMPTZ,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
   )`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS job_title VARCHAR(120) NOT NULL DEFAULT 'Colaborador'`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ`,
+  `CREATE TABLE IF NOT EXISTS auth_rate_limits (
+    key_hash VARCHAR(64) PRIMARY KEY,
+    failures INTEGER NOT NULL DEFAULT 0,
+    blocked_until TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS availabilities (
     id UUID PRIMARY KEY,
     owner_id UUID NOT NULL REFERENCES users(id),

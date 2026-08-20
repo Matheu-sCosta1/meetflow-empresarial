@@ -4,8 +4,10 @@ Plataforma empresarial para organizar reuniões, conversar com a equipe, adminis
 
 ## Recursos disponíveis
 
-- cadastro de empresa e primeiro administrador;
-- login individual com senha protegida e sessão JWT;
+- cadastro profissional com empresa, cargo, foto opcional e aceite dos termos;
+- confirmação e indicador de força da senha no cadastro;
+- login individual com senha protegida, sessão JWT e opção de manter conectado;
+- bloqueio temporário após tentativas repetidas de login;
 - empresas isoladas por `organizationId`;
 - perfis profissionais com foto, nome e cargo;
 - configurações de perfil, empresa, senha, saída e exclusão de conta;

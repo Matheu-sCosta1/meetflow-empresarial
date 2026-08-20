@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ApiRequest, ApiResponse, UploadedFile } from "./http.js";
-import { authenticated, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth.js";
+import { authenticated, authenticationKey, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth.js";
 import { ensureSchema, query, transaction, type DbStatement } from "./db.js";
 import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, required } from "./http.js";
 
@@ -42,6 +42,30 @@ function dateValue(value: unknown, label: string) {
 
 function requireAdmin(role: string) {
   if (role !== "ADMIN") throw new HttpError(403, "Apenas administradores podem realizar esta ação");
+}
+
+function validateStrongPassword(password: string, label = "A senha") {
+  if (password.length < 10 || !/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) {
+    throw new HttpError(400, `${label} deve ter ao menos 10 caracteres, uma letra maiúscula e um número`);
+  }
+}
+
+async function enforceLoginRateLimit(key: string) {
+  const rows = await query<QueryRow>(`SELECT blocked_until FROM auth_rate_limits WHERE key_hash = $1`, [key]);
+  const blockedUntil = rows[0]?.blocked_until ? new Date(String(rows[0].blocked_until)) : null;
+  if (blockedUntil && blockedUntil > new Date()) {
+    throw new HttpError(429, "Muitas tentativas de acesso. Aguarde 15 minutos e tente novamente");
+  }
+}
+
+async function recordLoginFailure(key: string) {
+  await query(`INSERT INTO auth_rate_limits(key_hash, failures, blocked_until, updated_at)
+    VALUES ($1, 1, NULL, NOW()) ON CONFLICT (key_hash) DO UPDATE SET
+    failures = CASE WHEN auth_rate_limits.updated_at < NOW() - INTERVAL '15 minutes' THEN 1 ELSE auth_rate_limits.failures + 1 END,
+    blocked_until = CASE
+      WHEN (CASE WHEN auth_rate_limits.updated_at < NOW() - INTERVAL '15 minutes' THEN 1 ELSE auth_rate_limits.failures + 1 END) >= 5
+      THEN NOW() + INTERVAL '15 minutes' ELSE NULL END,
+    updated_at = NOW()`, [key]);
 }
 
 function databaseMedia(content: unknown) {
@@ -117,11 +141,13 @@ async function meetingRows(organizationId: string, id?: string, from?: string, t
 async function register(request: ApiRequest, response: ApiResponse) {
   const body = await jsonBody<UnknownBody>(request);
   const name = required(body.name, "Nome", 120);
+  const jobTitle = required(body.jobTitle, "Cargo", 120);
   const organizationName = required(body.organizationName, "Nome da empresa", 120);
   const email = required(body.email, "E-mail", 180).toLowerCase();
   const password = required(body.password, "Senha", 200);
   if (!isEmail(email)) throw new HttpError(400, "Informe um e-mail válido");
-  if (password.length < 8) throw new HttpError(400, "A senha deve ter no mínimo 8 caracteres");
+  validateStrongPassword(password);
+  if (body.acceptTerms !== true) throw new HttpError(400, "Aceite os Termos de Uso e a Política de Privacidade para continuar");
   if (await userByEmail(email)) throw new HttpError(409, "Já existe uma conta com este e-mail");
 
   const now = new Date().toISOString();
@@ -131,8 +157,8 @@ async function register(request: ApiRequest, response: ApiResponse) {
   const passwordHash = await hashPassword(password);
   const statements: DbStatement[] = [
     { text: `INSERT INTO organizations(id, name, slug, created_at, updated_at) VALUES ($1,$2,$3,$4,$4)`, params: [organizationId, organizationName, organizationSlug, now] },
-    { text: `INSERT INTO users(id, organization_id, name, email, password_hash, role, job_title, active, created_at, updated_at)
-      VALUES ($1,$2,$3,$4,$5,'ADMIN','Administrador',TRUE,$6,$6)`, params: [userId, organizationId, name, email, passwordHash, now] },
+    { text: `INSERT INTO users(id, organization_id, name, email, password_hash, role, job_title, terms_accepted_at, active, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,$5,'ADMIN',$6,$7,TRUE,$7,$7)`, params: [userId, organizationId, name, email, passwordHash, jobTitle, now] },
     { text: `INSERT INTO chat_channels(id, organization_id, created_by_id, name, type, created_at, updated_at)
       VALUES ($1,$2,$3,'Geral','GROUP',$4,$4)`, params: [randomUUID(), organizationId, userId, now] },
   ];
@@ -141,18 +167,25 @@ async function register(request: ApiRequest, response: ApiResponse) {
       VALUES ($1,$2,$3,'09:00','18:00','America/Sao_Paulo',TRUE,$4,$4)`, params: [randomUUID(), userId, day, now] });
   }
   await transaction(statements);
-  const user = { id: userId, organizationId, name, email, role: "ADMIN" as const, jobTitle: "Administrador", avatarUrl: null, organizationName, organizationSlug };
-  json(response, 201, { token: signToken(user), user: userView(user) });
+  const user = { id: userId, organizationId, name, email, role: "ADMIN" as const, jobTitle, avatarUrl: null, organizationName, organizationSlug };
+  json(response, 201, { token: signToken(user, true), user: userView(user) });
 }
 
 async function login(request: ApiRequest, response: ApiResponse) {
   const body = await jsonBody<UnknownBody>(request);
   const email = required(body.email, "E-mail", 180).toLowerCase();
   const password = required(body.password, "Senha", 200);
+  const remember = body.remember === true;
+  const rateKey = authenticationKey(email, request.headers);
+  await enforceLoginRateLimit(rateKey);
   const row = await userByEmail(email);
-  if (!row?.active || !await verifyPassword(password, row.password_hash)) throw new HttpError(401, "E-mail ou senha inválidos");
+  if (!row?.active || !await verifyPassword(password, row.password_hash)) {
+    await recordLoginFailure(rateKey);
+    throw new HttpError(401, "E-mail ou senha inválidos");
+  }
+  await query(`DELETE FROM auth_rate_limits WHERE key_hash = $1`, [rateKey]);
   const user = mapUser(row);
-  json(response, 200, { token: signToken(user), user: userView(user) });
+  json(response, 200, { token: signToken(user, remember), user: userView(user) });
 }
 
 async function publicMedia(response: ApiResponse, id: string) {
@@ -322,7 +355,7 @@ async function addTeamMember(request: ApiRequest, response: ApiResponse, user: N
   const jobTitle = required(body.jobTitle, "Cargo", 120);
   const role = body.role === "ADMIN" ? "ADMIN" : "MEMBER";
   if (!isEmail(email)) throw new HttpError(400, "Informe um e-mail válido");
-  if (password.length < 8) throw new HttpError(400, "A senha deve ter no mínimo 8 caracteres");
+  validateStrongPassword(password);
   if (await userByEmail(email)) throw new HttpError(409, "Já existe uma conta com este e-mail");
   const id = randomUUID();
   const now = new Date().toISOString();
@@ -382,7 +415,7 @@ async function changePassword(request: ApiRequest, response: ApiResponse, user: 
   const body = await jsonBody<UnknownBody>(request);
   const currentPassword = required(body.currentPassword, "Senha atual", 200);
   const newPassword = required(body.newPassword, "Nova senha", 200);
-  if (newPassword.length < 8) throw new HttpError(400, "A nova senha deve ter no mínimo 8 caracteres");
+  validateStrongPassword(newPassword, "A nova senha");
   const row = await userByEmail(user.email);
   if (!row || !await verifyPassword(currentPassword, row.password_hash)) throw new HttpError(401, "A senha atual está incorreta");
   await query(`UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3`, [await hashPassword(newPassword), new Date(), user.id]);

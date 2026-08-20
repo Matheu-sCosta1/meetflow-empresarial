@@ -44,12 +44,12 @@ export class MeetFlowApi {
 
   authenticated(token: string) { return new MeetFlowApi(this.baseUrl, token); }
 
-  register(input: { name: string; email: string; password: string; organizationName: string }) {
+  register(input: { name: string; jobTitle: string; email: string; password: string; organizationName: string; acceptTerms: boolean }) {
     return this.request<AuthResponse>("/auth/register", { method: "POST", body: JSON.stringify(input) });
   }
 
-  login(email: string, password: string) {
-    return this.request<AuthResponse>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+  login(email: string, password: string, remember = false) {
+    return this.request<AuthResponse>("/auth/login", { method: "POST", body: JSON.stringify({ email, password, remember }) });
   }
 
   me() { return this.request<AuthUser>("/auth/me"); }

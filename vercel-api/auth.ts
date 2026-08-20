@@ -36,12 +36,19 @@ function encode(value: string | Buffer) {
   return Buffer.from(value).toString("base64url");
 }
 
-export function signToken(user: { id: string; email: string }) {
+export function signToken(user: { id: string; email: string }, remember = false) {
   const header = encode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const payload = encode(JSON.stringify({ sub: user.id, email: user.email, exp: Math.floor(Date.now() / 1000) + 43_200 }));
+  const lifetime = remember ? 2_592_000 : 43_200;
+  const payload = encode(JSON.stringify({ sub: user.id, email: user.email, exp: Math.floor(Date.now() / 1000) + lifetime }));
   const content = `${header}.${payload}`;
   const signature = createHmac("sha256", secret()).update(content).digest("base64url");
   return `${content}.${signature}`;
+}
+
+export function authenticationKey(email: string, headers: IncomingHttpHeaders) {
+  const forwarded = Array.isArray(headers["x-forwarded-for"]) ? headers["x-forwarded-for"][0] : headers["x-forwarded-for"];
+  const address = forwarded?.split(",")[0]?.trim() || "unknown";
+  return createHmac("sha256", secret()).update(`${email.toLowerCase()}|${address}`).digest("hex");
 }
 
 function tokenSubject(token: string) {
