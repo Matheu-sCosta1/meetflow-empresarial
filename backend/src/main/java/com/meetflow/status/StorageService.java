@@ -41,6 +41,13 @@ public class StorageService {
         return new StoredMedia("/media/" + filename, contentType.startsWith("video/") ? "VIDEO" : "IMAGE");
     }
 
+    public StoredMedia storeAvatar(MultipartFile file) {
+        if (file.getSize() > 5 * 1024 * 1024) throw new BusinessException("A foto de perfil deve ter no máximo 5 MB");
+        String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
+        if (!contentType.startsWith("image/")) throw new BusinessException("A foto de perfil deve ser uma imagem");
+        return store(file);
+    }
+
     public void delete(String mediaUrl) {
         if (mediaUrl == null || !mediaUrl.startsWith("/media/")) return;
         Path target = root.resolve(mediaUrl.substring("/media/".length())).normalize();

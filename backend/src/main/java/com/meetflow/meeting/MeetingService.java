@@ -39,6 +39,7 @@ public class MeetingService {
         validateRange(request.startAt(), request.endAt());
         AppUser owner = request.ownerId() == null ? actor : userRepository.findById(request.ownerId()).orElseThrow(() -> new NotFoundException("Responsável não encontrado"));
         assertSameOrganization(actor, owner);
+        if (!owner.isEnabled()) throw new BusinessException("O responsável selecionado está inativo");
         ensureAvailable(owner.getId(), request.startAt(), request.endAt());
 
         Meeting meeting = new Meeting();
@@ -51,7 +52,11 @@ public class MeetingService {
         meeting.setMode(request.mode() == null ? "VIDEO" : request.mode());
         meeting.setLocation(request.location());
         meeting.setNotes(request.notes());
-        if (request.meetingTypeId() != null) meeting.setMeetingType(typeRepository.findById(request.meetingTypeId()).orElseThrow(() -> new NotFoundException("Tipo de reunião não encontrado")));
+        if (request.meetingTypeId() != null) {
+            MeetingType type = typeRepository.findById(request.meetingTypeId()).orElseThrow(() -> new NotFoundException("Tipo de reunião não encontrado"));
+            if (!type.getOrganization().getId().equals(actor.getOrganization().getId())) throw new NotFoundException("Tipo de reunião não encontrado");
+            meeting.setMeetingType(type);
+        }
         meeting = meetingRepository.save(meeting);
         saveGuestsAndNotify(meeting, request.guests() == null ? List.of() : request.guests());
         return view(meeting);

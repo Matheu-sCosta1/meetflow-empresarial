@@ -24,6 +24,9 @@ public class AppUser extends BaseEntity implements UserDetails {
     @Column(nullable = false, length = 120)
     private String name;
 
+    @Column(name = "job_title", nullable = false, length = 120)
+    private String jobTitle = "Colaborador";
+
     @Column(nullable = false, unique = true, length = 180)
     private String email;
 

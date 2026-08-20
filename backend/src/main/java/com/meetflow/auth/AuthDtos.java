@@ -19,5 +19,6 @@ public final class AuthDtos {
 
     public record AuthResponse(String token, UserView user) {}
 
-    public record UserView(UUID id, String name, String email, String role, UUID organizationId, String organizationName, String organizationSlug) {}
+    public record UserView(UUID id, String name, String email, String role, String jobTitle, String avatarUrl,
+                           UUID organizationId, String organizationName, String organizationSlug) {}
 }

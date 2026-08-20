@@ -8,7 +8,7 @@ Plataforma empresarial para organizar reuniões, compartilhar links de agendamen
 - painel responsivo para desktop e celular;
 - perfis profissionais com foto, nome e cargo;
 - configurações de perfil, workspace, sessão e exclusão de conta;
-- colaboradores ativos, convites pendentes e níveis de acesso;
+- colaboradores ativos, contas individuais e níveis de acesso;
 - agenda semanal e criação rápida de reuniões;
 - prevenção de conflitos de horário no backend;
 - tipos de reunião com link público de agendamento;
@@ -67,7 +67,7 @@ A aplicação publicada não usa mais listas locais nem dados de demonstração.
 
 As principais rotas da aplicação hospedada ficam em `app/api`. O backend Java/PostgreSQL continua no repositório como implantação independente para infraestrutura própria.
 
-## Rodar o projeto inteiro
+## Rodar o produto local completo
 
 Pré-requisito: Docker Desktop ou Docker Engine com o plugin Compose.
 
@@ -77,10 +77,10 @@ Pré-requisito: Docker Desktop ou Docker Engine com o plugin Compose.
    cp .env.example .env
    ```
 
-2. Inicie todos os serviços:
+2. Inicie todos os serviços em segundo plano:
 
    ```bash
-   docker compose up --build
+   docker compose up --build -d
    ```
 
 3. Abra:
@@ -91,6 +91,8 @@ Pré-requisito: Docker Desktop ou Docker Engine com o plugin Compose.
    - Saúde da API: `http://localhost:8080/actuator/health`
 
 O PostgreSQL fica disponível em `localhost:5432`. Os dados e as mídias usam volumes Docker e permanecem após reiniciar os contêineres.
+
+O modo local é ativado automaticamente pelo Docker Compose. A interface chama a API Spring Boot em `localhost:8080`, e a API grava no PostgreSQL do contêiner `postgres`. Não é necessário configurar essa ligação manualmente.
 
 Para encerrar:
 
@@ -104,28 +106,11 @@ Para também apagar o banco e as mídias locais:
 docker compose down --volumes
 ```
 
-## Primeiro usuário
+## Primeiro acesso
 
-Registre a empresa e o administrador:
+Abra `http://localhost:3000`, escolha **Criar empresa** e preencha nome, empresa, e-mail e senha. Esse cadastro é real: ele cria a organização, o primeiro administrador, a disponibilidade padrão e o canal `Geral` no PostgreSQL.
 
-```bash
-curl -X POST http://localhost:8080/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Marcos Matheus",
-    "email": "marcos@empresa.com",
-    "password": "senha-segura-123",
-    "organizationName": "Flow Studio"
-  }'
-```
-
-A resposta contém um `token`. Nas rotas protegidas, envie:
-
-```text
-Authorization: Bearer SEU_TOKEN
-```
-
-Ao cadastrar a empresa, o sistema cria automaticamente o canal de chat `Geral`.
+Depois disso, o administrador pode cadastrar colaboradores em **Colaboradores**. Cada pessoa recebe uma conta própria e já pode entrar pela mesma tela com o e-mail e a senha inicial. Não há usuários, reuniões ou mensagens de demonstração.
 
 ## Rotas principais
 
@@ -134,6 +119,10 @@ Ao cadastrar a empresa, o sistema cria automaticamente o canal de chat `Geral`.
 | `POST /api/auth/register` | Criar empresa e administrador |
 | `POST /api/auth/login` | Entrar e receber JWT |
 | `GET /api/auth/me` | Consultar usuário atual |
+| `PATCH /api/account/profile` | Atualizar perfil e empresa |
+| `POST /api/account/avatar` | Atualizar foto do perfil |
+| `PATCH /api/account/password` | Alterar senha |
+| `DELETE /api/account` | Desativar a própria conta |
 | `GET/POST /api/meetings` | Listar e criar reuniões |
 | `PATCH /api/meetings/{id}/cancel` | Cancelar reunião |
 | `GET/POST /api/meeting-types` | Gerenciar tipos e links públicos |
@@ -145,7 +134,8 @@ Ao cadastrar a empresa, o sistema cria automaticamente o canal de chat `Geral`.
 | `GET/POST /api/chat/channels/{id}/messages` | Histórico e envio de mensagens |
 | `GET/POST /api/statuses` | Listar e publicar status |
 | `DELETE /api/statuses/{id}` | Excluir o próprio status |
-| `GET /api/team` | Listar equipe da empresa |
+| `GET/POST /api/team` | Listar e cadastrar colaboradores |
+| `DELETE /api/team/{id}` | Desativar um colaborador |
 
 Clientes do chat recebem novas mensagens no tópico STOMP `/topic/channels/{channelId}`. O handshake é feito em `/ws` e o cliente deve enviar `Authorization: Bearer SEU_TOKEN` no frame STOMP `CONNECT`.
 

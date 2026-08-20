@@ -1,10 +1,12 @@
 import { ArrowRight, CalendarCheck2, MessagesSquare, ShieldCheck, Sparkles, Video } from "lucide-react";
 import { chatGPTSignInPath, getChatGPTUser } from "./chatgpt-auth";
 import DashboardClient from "./dashboard-client";
+import LocalApp from "./local-app";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
+  if (process.env.APP_RUNTIME_MODE === "local") return <LocalApp />;
   const user = await getChatGPTUser();
   if (user) return <DashboardClient identity={user} />;
 

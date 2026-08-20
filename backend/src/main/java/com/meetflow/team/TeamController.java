@@ -1,12 +1,12 @@
 package com.meetflow.team;
 
 import com.meetflow.domain.AppUser;
-import com.meetflow.repository.UserRepository;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.UUID;
@@ -15,13 +15,25 @@ import java.util.UUID;
 @RequestMapping("/api/team")
 @RequiredArgsConstructor
 public class TeamController {
-    private final UserRepository userRepository;
+    private final TeamService teamService;
 
     @GetMapping
-    List<MemberView> members(@AuthenticationPrincipal AppUser user) {
-        return userRepository.findAllByOrganizationIdOrderByName(user.getOrganization().getId()).stream()
-                .map(member -> new MemberView(member.getId(), member.getName(), member.getEmail(), member.getRole().name(), member.getAvatarUrl(), member.isActive())).toList();
+    List<TeamDtos.MemberView> members(@AuthenticationPrincipal AppUser user) {
+        return teamService.members(user);
     }
 
-    public record MemberView(UUID id, String name, String email, String role, String avatarUrl, boolean active) {}
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasRole('ADMIN')")
+    TeamDtos.MemberView create(@AuthenticationPrincipal AppUser user,
+                               @Valid @RequestBody TeamDtos.CreateMemberRequest request) {
+        return teamService.create(user, request);
+    }
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @PreAuthorize("hasRole('ADMIN')")
+    void deactivate(@AuthenticationPrincipal AppUser user, @PathVariable UUID id) {
+        teamService.deactivate(user, id);
+    }
 }

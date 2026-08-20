@@ -42,6 +42,7 @@ public class AuthService {
         user.setEmail(request.email().trim().toLowerCase(Locale.ROOT));
         user.setPasswordHash(passwordEncoder.encode(request.password()));
         user.setRole(UserRole.ADMIN);
+        user.setJobTitle("Administrador");
         user = userRepository.save(user);
 
         for (int day = 1; day <= 5; day++) {
@@ -71,7 +72,8 @@ public class AuthService {
 
     public AuthDtos.UserView view(AppUser user) {
         Organization org = user.getOrganization();
-        return new AuthDtos.UserView(user.getId(), user.getName(), user.getEmail(), user.getRole().name(), org.getId(), org.getName(), org.getSlug());
+        return new AuthDtos.UserView(user.getId(), user.getName(), user.getEmail(), user.getRole().name(),
+                user.getJobTitle(), user.getAvatarUrl(), org.getId(), org.getName(), org.getSlug());
     }
 
     private AuthDtos.AuthResponse response(AppUser user) { return new AuthDtos.AuthResponse(jwtService.generateToken(user), view(user)); }
