@@ -120,7 +120,28 @@ const schema = [
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
   )`,
+  `ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS reply_to_id UUID REFERENCES chat_messages(id) ON DELETE SET NULL`,
+  `ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`,
+  `ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
   `CREATE INDEX IF NOT EXISTS idx_messages_channel_created ON chat_messages(channel_id, created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS chat_channel_reads (
+    channel_id UUID NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    last_read_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY(channel_id, user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS notifications (
+    id UUID PRIMARY KEY,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type VARCHAR(40) NOT NULL,
+    title VARCHAR(160) NOT NULL,
+    body VARCHAR(500) NOT NULL,
+    link VARCHAR(160),
+    read_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS media_objects (
     id UUID PRIMARY KEY,
     content_type VARCHAR(100) NOT NULL,

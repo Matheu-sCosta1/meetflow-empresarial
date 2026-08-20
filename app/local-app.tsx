@@ -3,13 +3,13 @@
 
 import {
   AlertTriangle, ArrowRight, BriefcaseBusiness, Building2, CalendarDays, Check,
-  CheckCircle2, ChevronRight, Clock3, Eye, EyeOff, Hash, Home, ImagePlus, Loader2,
+  Bell, CheckCheck, CheckCircle2, ChevronRight, Clock3, CornerUpLeft, Eye, EyeOff, Hash, Home, ImagePlus, Loader2,
   LockKeyhole, LogOut, Mail, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck,
-  Sparkles, RefreshCw, Trash2, UserPlus, Users, Video, X,
+  Sparkles, Pencil, RefreshCw, Trash2, UserPlus, Users, Video, Wifi, WifiOff, X,
 } from "lucide-react";
 import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AuthUser, Channel, ChatMessage, MeetFlowApi, Meeting, TeamMember, TeamStatus, meetFlowApi,
+  AppNotification, AuthUser, Channel, ChatMessage, MeetFlowApi, Meeting, TeamMember, TeamStatus, meetFlowApi,
 } from "./lib/meetflow-api";
 
 const SESSION_KEY = "meetflow.local.session";
@@ -18,6 +18,7 @@ const MAX_STATUS_SOURCE_IMAGE_BYTES = 20_000_000;
 type Session = { token: string; user: AuthUser; remember: boolean };
 type View = "inicio" | "agenda" | "chat" | "status" | "equipe" | "configuracoes";
 type Modal = "meeting" | "channel" | "status" | "member" | "delete" | null;
+type RealtimeState = "checking" | "live" | "fallback";
 
 const nav: Array<{ id: View; label: string; icon: typeof Home }> = [
   { id: "inicio", label: "Visão geral", icon: Home },
@@ -247,6 +248,9 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
   const [channels, setChannels] = useState<Channel[]>([]);
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [statuses, setStatuses] = useState<TeamStatus[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [realtimeState, setRealtimeState] = useState<RealtimeState>("checking");
   const [activeChannel, setActiveChannel] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -257,9 +261,9 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
     const from = new Date(Date.now() - 30 * 86400000).toISOString();
     const to = new Date(Date.now() + 365 * 86400000).toISOString();
     const results = await Promise.allSettled([
-      api.meetings(from, to), api.channels(), api.team(), api.statuses(),
+      api.meetings(from, to), api.channels(), api.team(), api.statuses(), api.notifications(),
     ]);
-    const [meetingResult, channelResult, memberResult, statusResult] = results;
+    const [meetingResult, channelResult, memberResult, statusResult, notificationResult] = results;
     if (meetingResult.status === "fulfilled") setMeetings(Array.isArray(meetingResult.value) ? meetingResult.value : []);
     if (channelResult.status === "fulfilled") {
       const nextChannels = Array.isArray(channelResult.value) ? channelResult.value : [];
@@ -268,11 +272,29 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
     }
     if (memberResult.status === "fulfilled") setMembers(Array.isArray(memberResult.value) ? memberResult.value : []);
     if (statusResult.status === "fulfilled") setStatuses(Array.isArray(statusResult.value) ? statusResult.value : []);
-    const failed = results.find((result) => result.status === "rejected");
+    if (notificationResult.status === "fulfilled") setNotifications(Array.isArray(notificationResult.value) ? notificationResult.value : []);
+    // Notificações são uma melhoria progressiva: a API Java local antiga pode não expor a rota ainda.
+    const failed = results.slice(0, 4).find((result) => result.status === "rejected");
     if (failed?.status === "rejected") showError(failed.reason);
     else setError("");
     setLoading(false);
   }, [api, showError]);
+
+  const refreshChannels = useCallback(async () => {
+    const next = await api.channels();
+    setChannels(Array.isArray(next) ? next : []);
+  }, [api]);
+
+  const refreshNotifications = useCallback(async () => {
+    const next = await api.notifications();
+    setNotifications(Array.isArray(next) ? next : []);
+  }, [api]);
+
+  const markChannelRead = useCallback(async (channelId: string) => {
+    if (!channelId) return;
+    await api.markChannelRead(channelId);
+    await refreshChannels();
+  }, [api, refreshChannels]);
 
   useEffect(() => { const timer = window.setTimeout(() => void refresh(), 0); return () => window.clearTimeout(timer); }, [refresh]);
   useEffect(() => {
@@ -282,7 +304,10 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
       if (!silent) setMessagesLoading(true);
       try {
         const data = await api.messages(activeChannel);
-        if (alive) setMessages(Array.isArray(data) ? data : []);
+        if (alive) {
+          setMessages(Array.isArray(data) ? data : []);
+          if (!silent) void markChannelRead(activeChannel).catch(() => undefined);
+        }
       } catch (reason) {
         if (alive) showError(reason);
       } finally {
@@ -292,9 +317,57 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
     void load();
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void load(true);
-    }, 5000);
+    }, realtimeState === "live" ? 30000 : 5000);
     return () => { alive = false; window.clearInterval(timer); };
-  }, [activeChannel, api, showError, view]);
+  }, [activeChannel, api, markChannelRead, realtimeState, showError, view]);
+
+  const channelIds = channels.map((channel) => channel.id).join("|");
+  useEffect(() => {
+    let alive = true;
+    let cleanup = () => undefined;
+    async function connect() {
+      try {
+        const config = await api.realtimeConfig();
+        if (!config.enabled || !alive) { if (alive) setRealtimeState("fallback"); return; }
+        const { Realtime } = await import("ably");
+        if (!alive) return;
+        const client = new Realtime({ ...api.realtimeAuthOptions(), closeOnUnload: true, echoMessages: false });
+        const subscribed = channels.map((channel) => {
+          const realtimeChannel = client.channels.get(api.chatRealtimeChannel(user.organizationId, channel.id));
+          const listener = () => {
+            if (!alive) return;
+            void refreshChannels().catch(() => undefined);
+            if (view === "chat" && activeChannel === channel.id) {
+              void api.messages(channel.id).then((next) => {
+                if (alive) setMessages(Array.isArray(next) ? next : []);
+              }).catch(() => undefined);
+              void markChannelRead(channel.id).catch(() => undefined);
+            }
+          };
+          void realtimeChannel.subscribe("chat.updated", listener).catch(() => setRealtimeState("fallback"));
+          return { realtimeChannel, listener };
+        });
+        const userChannel = client.channels.get(api.notificationRealtimeChannel(user.organizationId, user.id));
+        const notificationListener = () => { if (alive) void refreshNotifications().catch(() => undefined); };
+        void userChannel.subscribe("notification.created", notificationListener).catch(() => setRealtimeState("fallback"));
+        client.connection.on((change) => {
+          if (!alive) return;
+          setRealtimeState(change.current === "connected" ? "live" : change.current === "connecting" ? "checking" : "fallback");
+        });
+        cleanup = () => {
+          subscribed.forEach(({ realtimeChannel, listener }) => realtimeChannel.unsubscribe("chat.updated", listener));
+          userChannel.unsubscribe("notification.created", notificationListener);
+          client.close();
+        };
+      } catch {
+        if (alive) setRealtimeState("fallback");
+      }
+    }
+    void connect();
+    return () => { alive = false; cleanup(); };
+  // A string estável evita reconectar quando apenas contadores e prévias mudam.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChannel, api, channelIds, markChannelRead, refreshChannels, refreshNotifications, user.id, user.organizationId, view]);
 
   function switchView(next: View) {
     setView(next);
@@ -309,7 +382,24 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
   function logout() { onSession(null); }
 
   const activeMeetings = meetings.filter((item) => item.status !== "CANCELLED" && new Date(item.endAt) >= new Date());
+  const unreadChat = channels.reduce((total, channel) => total + (channel.unreadCount || 0), 0);
+  const unreadNotifications = notifications.filter((item) => !item.readAt).length;
   const title = nav.find((item) => item.id === view)?.label ?? (view === "configuracoes" ? "Configurações" : "MeetFlow");
+
+  async function openNotification(notification: AppNotification) {
+    setNotificationOpen(false);
+    if (!notification.readAt) {
+      try {
+        const updated = await api.markNotificationRead(notification.id);
+        setNotifications((current) => current.map((item) => item.id === updated.id ? updated : item));
+      } catch (reason) { showError(reason); }
+    }
+    if (notification.link?.startsWith("chat:")) {
+      const channelId = notification.link.slice(5);
+      if (channels.some((channel) => channel.id === channelId)) setActiveChannel(channelId);
+      switchView("chat");
+    }
+  }
 
   if (loading) return <Loading label="Carregando dados reais" />;
   return (
@@ -318,18 +408,18 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
       <aside className={`sidebar${sidebar ? " sidebar-open" : ""}`}>
         <div className="sidebar-brand"><span className="brand-mark"><Sparkles /></span>MeetFlow<button onClick={() => setSidebar(false)} aria-label="Fechar menu"><X /></button></div>
         <div className="workspace-card"><span className="avatar avatar-fallback">{initials(user.organizationName)}</span><div><strong>{user.organizationName}</strong><span>Workspace empresarial</span></div></div>
-        <nav className="main-nav"><span>MENU PRINCIPAL</span>{nav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => switchView(item.id)}><item.icon />{item.label}{item.id === "chat" && messages.length > 0 && <em>{messages.length}</em>}</button>)}</nav>
+        <nav className="main-nav"><span>MENU PRINCIPAL</span>{nav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => switchView(item.id)}><item.icon />{item.label}{item.id === "chat" && unreadChat > 0 && <em>{unreadChat > 99 ? "99+" : unreadChat}</em>}</button>)}</nav>
         <div className="sidebar-footer"><button className={view === "configuracoes" ? "active" : ""} onClick={() => switchView("configuracoes")}><Settings />Configurações</button><button onClick={logout}><LogOut />Sair</button></div>
         <div className="sidebar-profile"><Avatar name={user.name} url={user.avatarUrl} api={api} /><div><strong>{user.name}</strong><span>{user.jobTitle}</span></div></div>
       </aside>
       <section className="main-area">
-        <header className="topbar"><div className="topbar-title"><button className="menu-button" onClick={() => setSidebar(true)}><Menu /></button><div><span>{user.organizationName}</span><h1>{title}</h1></div></div><div className="topbar-actions"><span className="local-live"><i /> PostgreSQL conectado</span><button className="button button-primary" onClick={() => setModal("meeting")}><Plus /> Nova reunião</button></div></header>
+        <header className="topbar"><div className="topbar-title"><button className="menu-button" onClick={() => setSidebar(true)}><Menu /></button><div><span>{user.organizationName}</span><h1>{title}</h1></div></div><div className="topbar-actions"><span className={`realtime-pill ${realtimeState}`}>{realtimeState === "live" ? <Wifi /> : <WifiOff />}{realtimeState === "live" ? "Tempo real" : realtimeState === "checking" ? "Conectando" : "Sincronização segura"}</span><div className="notification-center"><button className="notification-button" onClick={() => setNotificationOpen((value) => !value)} aria-label={`${unreadNotifications} notificações não lidas`} aria-expanded={notificationOpen}><Bell />{unreadNotifications > 0 && <em>{unreadNotifications > 9 ? "9+" : unreadNotifications}</em>}</button>{notificationOpen && <section className="notification-popover"><header><div><span className="section-kicker">CENTRAL</span><h3>Notificações</h3></div>{unreadNotifications > 0 && <button onClick={() => void api.markAllNotificationsRead().then(() => setNotifications((current) => current.map((item) => ({ ...item, readAt: item.readAt || new Date().toISOString() })))).catch(showError)}><CheckCheck /> Marcar lidas</button>}</header><div>{notifications.length ? notifications.slice(0, 20).map((notification) => <button className={`notification-item${notification.readAt ? "" : " unread"}`} key={notification.id} onClick={() => void openNotification(notification)}><span><MessageCircle /></span><div><strong>{notification.title}</strong><p>{notification.body}</p><small>{relativeTime(notification.createdAt)}</small></div></button>) : <div className="notification-empty"><Bell /><strong>Tudo tranquilo por aqui</strong><span>Novas mensagens aparecerão neste espaço.</span></div>}</div></section>}</div><span className="local-live"><i /> PostgreSQL conectado</span><button className="button button-primary" onClick={() => setModal("meeting")}><Plus /> Nova reunião</button></div></header>
         {error && <div className="error-banner"><AlertTriangle /><span>{error}</span><button onClick={() => setError("")}><X /></button></div>}
         <DashboardErrorBoundary key={view} onRecover={() => { switchView("inicio"); void refresh(); }}>
           <div className="content page-enter">
             {view === "inicio" && <Overview user={user} meetings={activeMeetings} channels={channels} statuses={statuses} members={members} onNavigate={switchView} onMeeting={() => setModal("meeting")} onStatus={() => setModal("status")} onStory={setStory} />}
             {view === "agenda" && <Agenda meetings={meetings} onCreate={() => setModal("meeting")} onCancel={async (meeting) => { const reason = window.prompt("Motivo do cancelamento:", "Reunião cancelada pela equipe"); if (!reason) return; try { await api.cancelMeeting(meeting.id, reason); await refresh(); } catch (cause) { showError(cause); } }} />}
-            {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={(id) => { setMessages([]); setActiveChannel(id); }} messages={messages} loading={messagesLoading} user={user} api={api} onNewChannel={() => setModal("channel")} onRefresh={async () => { setMessagesLoading(true); try { setMessages(await api.messages(activeChannel)); } finally { setMessagesLoading(false); } }} onSend={async (content) => { const sent = await api.sendMessage(activeChannel, content); setMessages((current) => current.some((message) => message.id === sent.id) ? current : [...current, sent]); }} onError={showError} />}
+            {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={(id) => { setMessages([]); setActiveChannel(id); }} messages={messages} loading={messagesLoading} user={user} api={api} realtimeState={realtimeState} onNewChannel={() => setModal("channel")} onRefresh={async () => { setMessagesLoading(true); try { setMessages(await api.messages(activeChannel)); await markChannelRead(activeChannel); } finally { setMessagesLoading(false); } }} onSend={async (content, replyToId) => { const sent = await api.sendMessage(activeChannel, content, replyToId); setMessages((current) => current.some((message) => message.id === sent.id) ? current : [...current, sent]); await markChannelRead(activeChannel); }} onEdit={async (messageId, content) => { const updated = await api.editMessage(activeChannel, messageId, content); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onDelete={async (messageId) => { const updated = await api.deleteMessage(activeChannel, messageId); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onError={showError} />}
             {view === "status" && <Statuses statuses={statuses} api={api} user={user} onCreate={() => setModal("status")} onStory={setStory} onDelete={async (id) => { try { await api.deleteStatus(id); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "equipe" && <Team members={members} api={api} currentUserId={user.id} canAdd={user.role === "ADMIN"} onAdd={() => setModal("member")} onRemove={async (id) => { if (!window.confirm("Desativar o acesso deste colaborador?")) return; try { await api.removeMember(id); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "configuracoes" && <ProfileSettings user={user} api={api} onUser={replaceUser} onLogout={logout} onDelete={() => setModal("delete")} onError={showError} />}
@@ -367,9 +457,11 @@ function Agenda({ meetings, onCreate, onCancel }: { meetings: Meeting[]; onCreat
   return <section className="subpage"><div className="page-head"><div><span className="section-kicker">PLANEJAMENTO</span><h2>Agenda empresarial</h2><p>Horários persistentes e protegidos contra conflitos.</p></div><button className="button button-primary" onClick={onCreate}><Plus /> Nova reunião</button></div><div className="calendar-summary"><div><CalendarDays /><span>Registros<strong>{meetings.length}</strong></span></div><div><CheckCircle2 /><span>Confirmadas<strong>{meetings.filter((m) => m.status !== "CANCELLED").length}</strong></span></div><p>Cada reunião criada fica salva no banco da empresa e estará disponível para toda a equipe.</p></div><section className="panel agenda-panel"><div className="meeting-list">{ordered.length ? ordered.map((meeting) => <MeetingRow key={meeting.id} meeting={meeting} onCancel={onCancel} />) : <Empty icon={CalendarDays} title="Nenhuma reunião" text="A agenda da empresa ainda está vazia." action="Criar reunião" onAction={onCreate} />}</div></section></section>;
 }
 
-function Chat({ channels, activeChannel, onChannel, messages, loading, user, api, onNewChannel, onRefresh, onSend, onError }: { channels: Channel[]; activeChannel: string; onChannel: (id: string) => void; messages: ChatMessage[]; loading: boolean; user: AuthUser; api: MeetFlowApi; onNewChannel: () => void; onRefresh: () => Promise<void>; onSend: (content: string) => Promise<void>; onError: (reason: unknown) => void }) {
+function Chat({ channels, activeChannel, onChannel, messages, loading, user, api, realtimeState, onNewChannel, onRefresh, onSend, onEdit, onDelete, onError }: { channels: Channel[]; activeChannel: string; onChannel: (id: string) => void; messages: ChatMessage[]; loading: boolean; user: AuthUser; api: MeetFlowApi; realtimeState: RealtimeState; onNewChannel: () => void; onRefresh: () => Promise<void>; onSend: (content: string, replyToId?: string) => Promise<void>; onEdit: (messageId: string, content: string) => Promise<void>; onDelete: (messageId: string) => Promise<void>; onError: (reason: unknown) => void }) {
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
+  const [replying, setReplying] = useState<ChatMessage | null>(null);
+  const [editing, setEditing] = useState<ChatMessage | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const current = channels.find((channel) => channel.id === activeChannel);
@@ -383,22 +475,48 @@ function Chat({ channels, activeChannel, onChannel, messages, loading, user, api
     const value = content.trim();
     if (!value || !activeChannel || sending) return;
     setSending(true);
-    setContent("");
-    try { await onSend(value); }
+    try {
+      if (editing) await onEdit(editing.id, value);
+      else await onSend(value, replying?.id);
+      setContent("");
+      setEditing(null);
+      setReplying(null);
+    }
     catch (reason) { setContent(value); onError(reason); }
     finally { setSending(false); }
+  }
+
+  function beginReply(message: ChatMessage) {
+    setEditing(null);
+    setReplying(message);
+    setContent("");
+  }
+
+  function beginEdit(message: ChatMessage) {
+    setReplying(null);
+    setEditing(message);
+    setContent(message.content);
+  }
+
+  async function remove(message: ChatMessage) {
+    if (!window.confirm("Excluir esta mensagem? A conversa indicará que ela foi removida.")) return;
+    try { await onDelete(message.id); }
+    catch (reason) { onError(reason); }
   }
 
   return <section className="chat-shell">
     <aside className="conversation-list">
       <header><div><span className="section-kicker">CONVERSAS</span><h2>Canais <small>{channels.length}</small></h2></div><button className="icon-button" onClick={onNewChannel} title="Novo canal" aria-label="Criar canal"><Plus /></button></header>
       <span className="conversation-label">CANAIS DA EMPRESA</span>
-      <div className="conversation-scroll">{channels.map((channel) => <button key={channel.id} className={`conversation${activeChannel === channel.id ? " active" : ""}`} onClick={() => onChannel(channel.id)}><span className="channel-avatar"><Hash /></span><div><strong>{channel.name}</strong><small>Canal compartilhado</small></div></button>)}</div>
+      <div className="conversation-scroll">{channels.map((channel) => <button key={channel.id} className={`conversation${activeChannel === channel.id ? " active" : ""}`} onClick={() => onChannel(channel.id)}><span className="channel-avatar"><Hash /></span><div><strong>{channel.name}</strong><small>{channel.lastMessagePreview || "Canal compartilhado"}</small></div>{channel.unreadCount > 0 && <em className="unread-badge">{channel.unreadCount > 99 ? "99+" : channel.unreadCount}</em>}</button>)}</div>
     </aside>
     <article className="chat-room">
-      <header><div><span className="channel-avatar"><Hash /></span><div><strong>{current?.name ?? "Selecione um canal"}</strong><small><i /> mensagens sincronizadas</small></div></div><button className="chat-refresh" onClick={() => void onRefresh().catch(onError)} disabled={loading || !current} title="Atualizar mensagens" aria-label="Atualizar mensagens"><RefreshCw className={loading ? "spin" : ""} /></button></header>
-      <div className="messages" ref={messageListRef}><div className="day-divider"><span>{loading ? "Atualizando" : "Mensagens"}</span></div>{messages.length ? messages.map((message) => <div key={message.id} className={`message-row${message.senderId === user.id ? " own" : ""}`}><Avatar name={message.senderName} api={api} small /><div><span><strong>{message.senderName}</strong><time>{formatTime(message.createdAt)}</time></span><p>{message.content}</p></div></div>) : !loading && <Empty icon={MessageCircle} title="Comece a conversa" text="As mensagens aparecerão para todos neste canal." />}<div ref={endRef} /></div>
-      <form className="composer" onSubmit={send}><textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder={`Mensagem em #${current?.name ?? "canal"}`} disabled={!current || sending} aria-label="Escrever mensagem" /><span>{content.length}/4000</span><button className="send-button" aria-label="Enviar mensagem" disabled={!content.trim() || sending}>{sending ? <Loader2 className="spin" /> : <Send />}</button></form>
+      <header><div><span className="channel-avatar"><Hash /></span><div><strong>{current?.name ?? "Selecione um canal"}</strong><small className={`chat-sync ${realtimeState}`}>{realtimeState === "live" ? <><i /> conectado em tempo real</> : <><RefreshCw /> sincronização automática</>}</small></div></div><button className="chat-refresh" onClick={() => void onRefresh().catch(onError)} disabled={loading || !current} title="Atualizar mensagens" aria-label="Atualizar mensagens"><RefreshCw className={loading ? "spin" : ""} /></button></header>
+      <div className="messages" ref={messageListRef}><div className="day-divider"><span>{loading ? "Atualizando" : "Mensagens"}</span></div>{messages.length ? messages.map((message) => {
+        const canManage = !message.deleted && (message.senderId === user.id || user.role === "ADMIN");
+        return <div key={message.id} className={`message-row${message.senderId === user.id ? " own" : ""}${message.deleted ? " deleted" : ""}`}><Avatar name={message.senderName} api={api} small /><div className="message-content"><span><strong>{message.senderName}</strong><time>{formatTime(message.createdAt)}</time>{message.editedAt && !message.deleted && <small>editada</small>}</span><div className="message-bubble">{message.replyTo && <div className="reply-quote"><CornerUpLeft /><span><strong>{message.replyTo.senderName}</strong>{message.replyTo.deleted ? "Mensagem removida" : message.replyTo.content}</span></div>}<p>{message.deleted ? "Esta mensagem foi removida." : message.content}</p>{!message.deleted && <div className="message-actions"><button onClick={() => beginReply(message)} title="Responder" aria-label="Responder"><CornerUpLeft /></button>{message.senderId === user.id && <button onClick={() => beginEdit(message)} title="Editar" aria-label="Editar"><Pencil /></button>}{canManage && <button onClick={() => void remove(message)} title="Excluir" aria-label="Excluir"><Trash2 /></button>}</div>}</div></div></div>;
+      }) : !loading && <Empty icon={MessageCircle} title="Comece a conversa" text="As mensagens aparecerão para todos neste canal." />}<div ref={endRef} /></div>
+      <div className="composer-area">{(replying || editing) && <div className={`composer-context${editing ? " editing" : ""}`}><span>{editing ? <Pencil /> : <CornerUpLeft />}</span><div><strong>{editing ? "Editando sua mensagem" : `Respondendo a ${replying?.senderName}`}</strong><small>{editing?.content || replying?.content}</small></div><button onClick={() => { setEditing(null); setReplying(null); setContent(""); }} aria-label="Cancelar"><X /></button></div>}<form className="composer" onSubmit={send}><textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && (replying || editing)) { setReplying(null); setEditing(null); setContent(""); } else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder={editing ? "Edite sua mensagem" : `Mensagem em #${current?.name ?? "canal"}`} disabled={!current || sending} aria-label="Escrever mensagem" /><span>{content.length}/4000</span><button className="send-button" aria-label={editing ? "Salvar edição" : "Enviar mensagem"} disabled={!content.trim() || sending}>{sending ? <Loader2 className="spin" /> : editing ? <Check /> : <Send />}</button></form></div>
     </article>
   </section>;
 }

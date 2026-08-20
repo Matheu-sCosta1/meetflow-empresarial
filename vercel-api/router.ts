@@ -3,6 +3,7 @@ import type { ApiRequest, ApiResponse, UploadedFile } from "./http.js";
 import { assertAuthConfigured, authenticated, authenticationKey, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth.js";
 import { ensureSchema, query, transaction, type DbStatement } from "./db.js";
 import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, required } from "./http.js";
+import { chatChannel, notificationChannel, publishRealtime, realtimeConfigured, realtimeToken } from "./realtime.js";
 
 type UnknownBody = Record<string, unknown>;
 type QueryRow = Record<string, unknown>;
@@ -99,7 +100,12 @@ function meetingView(row: QueryRow) {
 }
 
 function channelView(row: QueryRow) {
-  return { id: String(row.id), name: String(row.name), type: String(row.type), createdAt: iso(row.created_at) };
+  return {
+    id: String(row.id), name: String(row.name), type: String(row.type), createdAt: iso(row.created_at),
+    unreadCount: Number(row.unread_count ?? 0),
+    lastMessageAt: row.last_message_at ? iso(row.last_message_at) : null,
+    lastMessagePreview: row.last_message_preview ? String(row.last_message_preview) : null,
+  };
 }
 
 function messageView(row: QueryRow) {
@@ -107,6 +113,18 @@ function messageView(row: QueryRow) {
     id: String(row.id), channelId: String(row.channel_id), senderId: String(row.sender_id),
     senderName: String(row.sender_name), content: String(row.content), messageType: String(row.message_type),
     attachmentUrl: row.attachment_url ? String(row.attachment_url) : null, createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at ?? row.created_at), editedAt: row.edited_at ? iso(row.edited_at) : null,
+    deleted: Boolean(row.deleted_at), replyTo: row.reply_to_id ? {
+      id: String(row.reply_to_id), senderName: String(row.reply_sender_name ?? "Mensagem"),
+      content: String(row.reply_content ?? "Mensagem indisponível"), deleted: Boolean(row.reply_deleted_at),
+    } : null,
+  };
+}
+
+function notificationView(row: QueryRow) {
+  return {
+    id: String(row.id), type: String(row.type), title: String(row.title), body: String(row.body),
+    link: row.link ? String(row.link) : null, readAt: row.read_at ? iso(row.read_at) : null, createdAt: iso(row.created_at),
   };
 }
 
@@ -256,8 +274,17 @@ async function cancelMeeting(request: ApiRequest, response: ApiResponse, organiz
   json(response, 200, meetingView((await meetingRows(organizationId, id))[0]));
 }
 
-async function listChannels(response: ApiResponse, organizationId: string) {
-  const rows = await query<QueryRow>(`SELECT id, name, type, created_at FROM chat_channels WHERE organization_id = $1 ORDER BY created_at`, [organizationId]);
+async function listChannels(response: ApiResponse, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
+  const rows = await query<QueryRow>(`SELECT c.id, c.name, c.type, c.created_at,
+    COALESCE((SELECT COUNT(*) FROM chat_messages unread
+      WHERE unread.channel_id = c.id AND unread.sender_id <> $2 AND unread.deleted_at IS NULL
+      AND unread.created_at > COALESCE(r.last_read_at, TIMESTAMPTZ '1970-01-01')), 0) AS unread_count,
+    (SELECT latest.created_at FROM chat_messages latest WHERE latest.channel_id = c.id ORDER BY latest.created_at DESC LIMIT 1) AS last_message_at,
+    (SELECT CASE WHEN latest.deleted_at IS NULL THEN LEFT(latest.content, 120) ELSE 'Mensagem excluída' END
+      FROM chat_messages latest WHERE latest.channel_id = c.id ORDER BY latest.created_at DESC LIMIT 1) AS last_message_preview
+    FROM chat_channels c LEFT JOIN chat_channel_reads r ON r.channel_id = c.id AND r.user_id = $2
+    WHERE c.organization_id = $1 ORDER BY COALESCE((SELECT MAX(m.created_at) FROM chat_messages m WHERE m.channel_id = c.id), c.created_at) DESC`,
+  [user.organizationId, user.id]);
   json(response, 200, rows.map(channelView));
 }
 
@@ -277,10 +304,27 @@ async function channelForUser(channelId: string, organizationId: string) {
   if (!rows[0]) throw new HttpError(404, "Canal não encontrado");
 }
 
+async function messageRows(channelId: string, organizationId: string, messageId?: string) {
+  const params: string[] = [channelId, organizationId];
+  const messageFilter = messageId ? (params.push(messageId), `AND m.id = $${params.length}`) : "";
+  return await query<QueryRow>(`SELECT m.id, m.channel_id, m.sender_id, sender.name AS sender_name,
+    m.content, m.message_type, m.attachment_url, m.created_at, m.updated_at, m.edited_at, m.deleted_at,
+    m.reply_to_id, reply.content AS reply_content, reply.deleted_at AS reply_deleted_at, reply_sender.name AS reply_sender_name
+    FROM chat_messages m
+    JOIN chat_channels c ON c.id = m.channel_id AND c.organization_id = $2
+    JOIN users sender ON sender.id = m.sender_id
+    LEFT JOIN chat_messages reply ON reply.id = m.reply_to_id
+    LEFT JOIN users reply_sender ON reply_sender.id = reply.sender_id
+    WHERE m.channel_id = $1 ${messageFilter} ORDER BY m.created_at`, params);
+}
+
 async function listMessages(response: ApiResponse, channelId: string, organizationId: string) {
   await channelForUser(channelId, organizationId);
-  const rows = await query<QueryRow>(`SELECT * FROM (SELECT m.id, m.channel_id, m.sender_id, u.name AS sender_name,
-    m.content, m.message_type, m.attachment_url, m.created_at FROM chat_messages m JOIN users u ON u.id = m.sender_id
+  const rows = await query<QueryRow>(`SELECT * FROM (SELECT m.id, m.channel_id, m.sender_id, sender.name AS sender_name,
+    m.content, m.message_type, m.attachment_url, m.created_at, m.updated_at, m.edited_at, m.deleted_at,
+    m.reply_to_id, reply.content AS reply_content, reply.deleted_at AS reply_deleted_at, reply_sender.name AS reply_sender_name
+    FROM chat_messages m JOIN users sender ON sender.id = m.sender_id
+    LEFT JOIN chat_messages reply ON reply.id = m.reply_to_id LEFT JOIN users reply_sender ON reply_sender.id = reply.sender_id
     WHERE m.channel_id = $1 ORDER BY m.created_at DESC LIMIT 200) recent ORDER BY created_at`, [channelId]);
   json(response, 200, rows.map(messageView));
 }
@@ -289,12 +333,85 @@ async function createMessage(request: ApiRequest, response: ApiResponse, channel
   await channelForUser(channelId, user.organizationId);
   const body = await jsonBody<UnknownBody>(request);
   const content = required(body.content, "Mensagem", 4000);
+  const replyToId = optional(body.replyToId, 100);
+  if (replyToId) {
+    const reply = await query<QueryRow>(`SELECT id FROM chat_messages WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL`, [replyToId, channelId]);
+    if (!reply[0]) throw new HttpError(400, "A mensagem respondida não está mais disponível");
+  }
   const id = randomUUID();
   const now = new Date().toISOString();
-  const rows = await query<QueryRow>(`INSERT INTO chat_messages(id, channel_id, sender_id, content, message_type, created_at, updated_at)
-    VALUES ($1,$2,$3,$4,'TEXT',$5,$5) RETURNING id, channel_id, sender_id, content, message_type, attachment_url, created_at`,
-    [id, channelId, user.id, content, now]);
-  json(response, 201, messageView({ ...rows[0], sender_name: user.name }));
+  const recipients = await query<QueryRow>(`SELECT id FROM users WHERE organization_id = $1 AND active = TRUE AND id <> $2`, [user.organizationId, user.id]);
+  const statements: DbStatement[] = [{
+    text: `INSERT INTO chat_messages(id, channel_id, sender_id, content, message_type, reply_to_id, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,'TEXT',$5,$6,$6)`,
+    params: [id, channelId, user.id, content, replyToId, now],
+  }];
+  const notificationIds = recipients.map(() => randomUUID());
+  recipients.forEach((recipient, index) => statements.push({
+    text: `INSERT INTO notifications(id, organization_id, user_id, type, title, body, link, created_at)
+      VALUES ($1,$2,$3,'CHAT_MESSAGE',$4,$5,$6,$7)`,
+    params: [notificationIds[index], user.organizationId, String(recipient.id), `Nova mensagem de ${user.name}`, content.slice(0, 180), `chat:${channelId}`, now],
+  }));
+  await transaction(statements);
+  const created = messageView((await messageRows(channelId, user.organizationId, id))[0]);
+  await publishRealtime(chatChannel(user.organizationId, channelId), "chat.updated", { channelId, messageId: id, action: "created" });
+  await Promise.all(recipients.map((recipient, index) => publishRealtime(
+    notificationChannel(user.organizationId, String(recipient.id)), "notification.created",
+    { id: notificationIds[index], type: "CHAT_MESSAGE" },
+  )));
+  json(response, 201, created);
+}
+
+async function updateMessage(request: ApiRequest, response: ApiResponse, channelId: string, messageId: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
+  await channelForUser(channelId, user.organizationId);
+  const body = await jsonBody<UnknownBody>(request);
+  const content = required(body.content, "Mensagem", 4000);
+  const now = new Date();
+  const rows = await query<QueryRow>(`UPDATE chat_messages SET content = $1, edited_at = $2, updated_at = $2
+    WHERE id = $3 AND channel_id = $4 AND sender_id = $5 AND deleted_at IS NULL RETURNING id`,
+  [content, now, messageId, channelId, user.id]);
+  if (!rows[0]) throw new HttpError(404, "Mensagem não encontrada ou sem permissão para editar");
+  const updated = messageView((await messageRows(channelId, user.organizationId, messageId))[0]);
+  await publishRealtime(chatChannel(user.organizationId, channelId), "chat.updated", { channelId, messageId, action: "updated" });
+  json(response, 200, updated);
+}
+
+async function deleteMessage(response: ApiResponse, channelId: string, messageId: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
+  await channelForUser(channelId, user.organizationId);
+  const now = new Date();
+  const rows = await query<QueryRow>(`UPDATE chat_messages SET content = 'Mensagem excluída', deleted_at = $1, updated_at = $1
+    WHERE id = $2 AND channel_id = $3 AND deleted_at IS NULL AND (sender_id = $4 OR $5 = 'ADMIN') RETURNING id`,
+  [now, messageId, channelId, user.id, user.role]);
+  if (!rows[0]) throw new HttpError(404, "Mensagem não encontrada ou sem permissão para excluir");
+  const deleted = messageView((await messageRows(channelId, user.organizationId, messageId))[0]);
+  await publishRealtime(chatChannel(user.organizationId, channelId), "chat.updated", { channelId, messageId, action: "deleted" });
+  json(response, 200, deleted);
+}
+
+async function markChannelRead(response: ApiResponse, channelId: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
+  await channelForUser(channelId, user.organizationId);
+  await query(`INSERT INTO chat_channel_reads(channel_id, user_id, last_read_at) VALUES ($1,$2,$3)
+    ON CONFLICT(channel_id, user_id) DO UPDATE SET last_read_at = EXCLUDED.last_read_at`, [channelId, user.id, new Date()]);
+  empty(response);
+}
+
+async function listNotifications(response: ApiResponse, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
+  const rows = await query<QueryRow>(`SELECT id, type, title, body, link, read_at, created_at FROM notifications
+    WHERE user_id = $1 AND organization_id = $2 ORDER BY created_at DESC LIMIT 60`, [user.id, user.organizationId]);
+  json(response, 200, rows.map(notificationView));
+}
+
+async function markNotificationRead(response: ApiResponse, notificationId: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
+  const rows = await query<QueryRow>(`UPDATE notifications SET read_at = COALESCE(read_at, $1)
+    WHERE id = $2 AND user_id = $3 AND organization_id = $4
+    RETURNING id, type, title, body, link, read_at, created_at`, [new Date(), notificationId, user.id, user.organizationId]);
+  if (!rows[0]) throw new HttpError(404, "Notificação não encontrada");
+  json(response, 200, notificationView(rows[0]));
+}
+
+async function markAllNotificationsRead(response: ApiResponse, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
+  await query(`UPDATE notifications SET read_at = COALESCE(read_at, $1) WHERE user_id = $2 AND organization_id = $3`, [new Date(), user.id, user.organizationId]);
+  empty(response);
 }
 
 async function listStatuses(response: ApiResponse, organizationId: string) {
@@ -443,7 +560,7 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (method === "OPTIONS") return empty(response);
     if (method === "GET" && samePath(path, "health")) {
       assertAuthConfigured();
-      return json(response, 200, { status: "ok", database: "connected", authentication: "configured" });
+      return json(response, 200, { status: "ok", database: "connected", authentication: "configured", realtime: realtimeConfigured() ? "configured" : "fallback" });
     }
     if (method === "POST" && samePath(path, "auth", "register")) return await register(request, response);
     if (method === "POST" && samePath(path, "auth", "login")) return await login(request, response);
@@ -452,13 +569,25 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     const user = await authenticated(request.headers);
     if (!user) throw new HttpError(401, "Sua sessão expirou. Entre novamente");
     if (method === "GET" && samePath(path, "auth", "me")) return json(response, 200, userView(user));
+    if (method === "GET" && samePath(path, "realtime", "config")) return json(response, 200, { enabled: realtimeConfigured() });
+    if (method === "GET" && samePath(path, "realtime", "token")) {
+      const token = await realtimeToken(user);
+      if (!token) throw new HttpError(503, "Tempo real ainda não configurado");
+      return json(response, 200, token);
+    }
     if (samePath(path, "meetings") && method === "GET") return await listMeetings(request, response, user.organizationId);
     if (samePath(path, "meetings") && method === "POST") return await createMeeting(request, response, user);
     if (samePath(path, "meetings", "*", "cancel") && method === "PATCH") return await cancelMeeting(request, response, user.organizationId, path[1]);
-    if (samePath(path, "chat", "channels") && method === "GET") return await listChannels(response, user.organizationId);
+    if (samePath(path, "chat", "channels") && method === "GET") return await listChannels(response, user);
     if (samePath(path, "chat", "channels") && method === "POST") return await createChannel(request, response, user);
     if (samePath(path, "chat", "channels", "*", "messages") && method === "GET") return await listMessages(response, path[2], user.organizationId);
     if (samePath(path, "chat", "channels", "*", "messages") && method === "POST") return await createMessage(request, response, path[2], user);
+    if (samePath(path, "chat", "channels", "*", "messages", "*") && method === "PATCH") return await updateMessage(request, response, path[2], path[4], user);
+    if (samePath(path, "chat", "channels", "*", "messages", "*") && method === "DELETE") return await deleteMessage(response, path[2], path[4], user);
+    if (samePath(path, "chat", "channels", "*", "read") && method === "POST") return await markChannelRead(response, path[2], user);
+    if (samePath(path, "notifications") && method === "GET") return await listNotifications(response, user);
+    if (samePath(path, "notifications", "read-all") && method === "POST") return await markAllNotificationsRead(response, user);
+    if (samePath(path, "notifications", "*", "read") && method === "POST") return await markNotificationRead(response, path[1], user);
     if (samePath(path, "statuses") && method === "GET") return await listStatuses(response, user.organizationId);
     if (samePath(path, "statuses") && method === "POST") return await createStatus(request, response, user);
     if (samePath(path, "statuses", "*") && method === "DELETE") return await deleteStatus(response, path[1], user);

@@ -25,8 +25,40 @@ export type Meeting = {
   participants: Array<{ name: string; email: string }>;
 };
 
-export type Channel = { id: string; name: string; type: "GROUP" | "DIRECT"; createdAt: string };
-export type ChatMessage = { id: string; channelId: string; senderId: string; senderName: string; content: string; messageType: string; attachmentUrl?: string; createdAt: string };
+export type Channel = {
+  id: string;
+  name: string;
+  type: "GROUP" | "DIRECT";
+  unreadCount: number;
+  lastMessageAt?: string;
+  lastMessagePreview?: string;
+  createdAt: string;
+};
+export type ChatReply = { id: string; senderName: string; content: string; deleted: boolean };
+export type ChatMessage = {
+  id: string;
+  channelId: string;
+  senderId: string;
+  senderName: string;
+  content: string;
+  messageType: string;
+  attachmentUrl?: string;
+  replyTo?: ChatReply;
+  editedAt?: string;
+  deleted: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+export type AppNotification = {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  link?: string;
+  readAt?: string;
+  createdAt: string;
+};
+export type RealtimeConfig = { enabled: boolean };
 export type TeamStatus = { id: string; authorId: string; authorName: string; mediaType: "IMAGE" | "VIDEO" | "TEXT"; mediaUrl?: string; caption?: string; createdAt: string; expiresAt: string };
 export type TeamMember = { id: string; name: string; email: string; role: "ADMIN" | "MEMBER"; jobTitle: string; avatarUrl?: string; active: boolean };
 
@@ -75,11 +107,45 @@ export class MeetFlowApi {
     return this.request<Channel>("/chat/channels", { method: "POST", body: JSON.stringify({ name, type: "GROUP" }) });
   }
   messages(channelId: string) { return this.request<ChatMessage[]>(`/chat/channels/${channelId}/messages`); }
-  sendMessage(channelId: string, content: string) {
+  sendMessage(channelId: string, content: string, replyToId?: string) {
     return this.request<ChatMessage>(`/chat/channels/${channelId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content, messageType: "TEXT" }),
+      body: JSON.stringify({ content, messageType: "TEXT", replyToId }),
     });
+  }
+  editMessage(channelId: string, messageId: string, content: string) {
+    return this.request<ChatMessage>(`/chat/channels/${channelId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content }),
+    });
+  }
+  deleteMessage(channelId: string, messageId: string) {
+    return this.request<ChatMessage>(`/chat/channels/${channelId}/messages/${messageId}`, { method: "DELETE" });
+  }
+  markChannelRead(channelId: string) {
+    return this.request<void>(`/chat/channels/${channelId}/read`, { method: "POST" });
+  }
+
+  notifications() { return this.request<AppNotification[]>("/notifications"); }
+  markNotificationRead(id: string) {
+    return this.request<AppNotification>(`/notifications/${id}/read`, { method: "POST" });
+  }
+  markAllNotificationsRead() {
+    return this.request<void>("/notifications/read-all", { method: "POST" });
+  }
+
+  realtimeConfig() { return this.request<RealtimeConfig>("/realtime/config"); }
+  realtimeAuthOptions() {
+    return {
+      authUrl: `${this.baseUrl}/realtime/token`,
+      authHeaders: this.token ? { Authorization: `Bearer ${this.token}` } : undefined,
+    };
+  }
+  chatRealtimeChannel(organizationId: string, channelId: string) {
+    return `meetflow:${organizationId}:chat:${channelId}`;
+  }
+  notificationRealtimeChannel(organizationId: string, userId: string) {
+    return `meetflow:${organizationId}:user:${userId}`;
   }
 
   statuses() { return this.request<TeamStatus[]>("/statuses"); }

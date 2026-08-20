@@ -13,7 +13,9 @@ Plataforma empresarial para organizar reuniões, conversar com a equipe, adminis
 - configurações de perfil, empresa, senha, saída e exclusão de conta;
 - colaboradores com níveis `ADMIN` e `MEMBER`;
 - agenda compartilhada e prevenção de conflitos de horário;
-- canais de chat com histórico persistente;
+- canais de chat com histórico persistente, respostas, edição e exclusão controlada;
+- contadores de mensagens não lidas e central interna de notificações;
+- atualização em tempo real opcional com Ably e sincronização periódica automática como fallback;
 - status de texto, foto ou vídeo com expiração em 24 horas;
 - interface responsiva para desktop e celular;
 - carrossel de status e painel empresarial sem dados de demonstração.
@@ -112,6 +114,14 @@ MEETFLOW_JWT_SECRET=uma-chave-aleatoria-longa
 
 Nunca salve os valores reais no GitHub.
 
+Para habilitar chat e notificações em tempo real, crie um aplicativo no plano gratuito da Ably e adicione somente no ambiente da Vercel:
+
+```text
+ABLY_API_KEY=nome-da-chave:segredo
+```
+
+A chave permanece no servidor. O navegador recebe um token temporário restrito aos canais da empresa autenticada. Sem essa variável, o MeetFlow continua funcional e atualiza as mensagens automaticamente a cada poucos segundos.
+
 ### Publicação
 
 1. importe o repositório na Vercel;
@@ -130,7 +140,7 @@ GET https://seu-dominio.vercel.app/api/health
 Resposta esperada:
 
 ```json
-{"status":"ok","database":"connected","authentication":"configured"}
+{"status":"ok","database":"connected","authentication":"configured","realtime":"configured"}
 ```
 
 ## Rotas hospedadas
@@ -148,6 +158,13 @@ Resposta esperada:
 | `PATCH /api/meetings/{id}/cancel` | Cancelar reunião |
 | `GET/POST /api/chat/channels` | Listar e criar canais |
 | `GET/POST /api/chat/channels/{id}/messages` | Histórico e envio de mensagens |
+| `PATCH/DELETE /api/chat/channels/{id}/messages/{messageId}` | Editar ou excluir mensagem |
+| `POST /api/chat/channels/{id}/read` | Marcar canal como lido |
+| `GET /api/notifications` | Listar notificações internas |
+| `POST /api/notifications/{id}/read` | Marcar notificação como lida |
+| `POST /api/notifications/read-all` | Marcar todas como lidas |
+| `GET /api/realtime/config` | Consultar disponibilidade do tempo real |
+| `GET /api/realtime/token` | Emitir token temporário e restrito |
 | `GET/POST /api/statuses` | Listar e publicar status |
 | `DELETE /api/statuses/{id}` | Excluir status próprio |
 | `GET/POST /api/team` | Listar e cadastrar colaboradores |
@@ -188,7 +205,7 @@ O workflow em `.github/workflows/ci.yml` executa essas verificações em pushes 
 
 - o Neon gratuito possui limites de armazenamento e computação;
 - arquivos ficam limitados a 3,5 MB nesta implantação;
-- o chat consulta mensagens periodicamente; WebSocket/STOMP permanece no backend Java;
+- o tempo real usa a cota do plano configurado na Ably e muda automaticamente para consultas periódicas quando indisponível;
 - confirmações por AWS SES permanecem no backend Java e ainda não são enviadas pelas funções serverless;
 - backups, monitoramento, e-mail transacional e armazenamento de objetos devem ser configurados antes da venda.
 
@@ -198,7 +215,7 @@ O workflow em `.github/workflows/ci.yml` executa essas verificações em pushes 
 
 1. convites e lembretes por e-mail;
 2. integração com Google Calendar, Outlook, Meet, Teams e Zoom;
-3. notificações internas e confirmação de presença;
+3. confirmação de presença e lembretes internos de reunião;
 4. reagendamento pelo convidado;
 5. reações e respostas nos status;
 6. armazenamento de objetos e miniaturas de vídeo;
