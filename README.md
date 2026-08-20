@@ -119,7 +119,7 @@ Nunca salve os valores reais no GitHub.
 3. cadastre `MEETFLOW_JWT_SECRET` ou mantenha o `JWT_SECRET` já existente;
 4. publique a branch `main`.
 
-O arquivo `vercel.json` executa o build da interface e publica a função `api/[...path].ts`. As tabelas são criadas automaticamente na primeira chamada à API.
+O arquivo `vercel.json` executa o build da interface e encaminha as rotas `/api/*` para a função `api/index.ts`. As tabelas são criadas automaticamente na primeira chamada à API.
 
 Para confirmar o banco e a função:
 
@@ -130,7 +130,7 @@ GET https://seu-dominio.vercel.app/api/health
 Resposta esperada:
 
 ```json
-{"status":"ok","database":"connected"}
+{"status":"ok","database":"connected","authentication":"configured"}
 ```
 
 ## Rotas hospedadas

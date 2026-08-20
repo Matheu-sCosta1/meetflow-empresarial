@@ -1,7 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-const apiUrl = process.env.VITE_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "/api";
+const apiUrl = (process.env.VITE_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "").trim() || "/api";
 
 export default defineConfig({
   root: "vercel",

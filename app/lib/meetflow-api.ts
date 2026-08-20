@@ -31,8 +31,12 @@ export type TeamStatus = { id: string; authorId: string; authorName: string; med
 export type TeamMember = { id: string; name: string; email: string; role: "ADMIN" | "MEMBER"; jobTitle: string; avatarUrl?: string; active: boolean };
 
 function defaultApiUrl() {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== "undefined") return `${window.location.protocol}//${window.location.hostname}:8080/api`;
+  const configured = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (configured) return configured.replace(/\/+$/, "");
+  if (typeof window !== "undefined") {
+    const localHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    return localHost ? `${window.location.protocol}//${window.location.hostname}:8080/api` : "/api";
+  }
   return "http://localhost:8080/api";
 }
 
@@ -122,12 +126,26 @@ export class MeetFlowApi {
     const headers = new Headers(init.headers);
     if (json && init.body) headers.set("Content-Type", "application/json");
     if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
-    const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    const url = `${this.baseUrl}${path}`;
+    let response: Response;
+    try {
+      response = await fetch(url, { ...init, headers });
+    } catch {
+      throw new Error("Não foi possível conectar ao MeetFlow. Verifique sua internet e tente novamente.");
+    }
     if (!response.ok) {
       const problem = await response.json().catch(() => null) as { detail?: string } | null;
-      throw new Error(problem?.detail ?? `Erro ${response.status} ao acessar a API`);
+      if (problem?.detail) throw new Error(problem.detail);
+      if (response.status === 404) throw new Error("O serviço do MeetFlow não foi encontrado. Atualize a página e tente novamente.");
+      if (response.status >= 500) throw new Error("O MeetFlow está temporariamente indisponível. Tente novamente em instantes.");
+      throw new Error(`Não foi possível concluir a operação (erro ${response.status}).`);
     }
-    return response.status === 204 ? (undefined as T) : response.json() as Promise<T>;
+    if (response.status === 204) return undefined as T;
+    try {
+      return await response.json() as T;
+    } catch {
+      throw new Error("O MeetFlow recebeu uma resposta inválida. Atualize a página e tente novamente.");
+    }
   }
 }
 

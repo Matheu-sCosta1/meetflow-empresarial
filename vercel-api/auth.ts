@@ -32,6 +32,10 @@ function secret() {
   return value;
 }
 
+export function assertAuthConfigured() {
+  secret();
+}
+
 function encode(value: string | Buffer) {
   return Buffer.from(value).toString("base64url");
 }

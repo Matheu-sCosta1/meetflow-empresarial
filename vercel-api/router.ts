@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ApiRequest, ApiResponse, UploadedFile } from "./http.js";
-import { authenticated, authenticationKey, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth.js";
+import { assertAuthConfigured, authenticated, authenticationKey, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth.js";
 import { ensureSchema, query, transaction, type DbStatement } from "./db.js";
 import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, required } from "./http.js";
 
@@ -166,9 +166,10 @@ async function register(request: ApiRequest, response: ApiResponse) {
     statements.push({ text: `INSERT INTO availabilities(id, owner_id, day_of_week, start_time, end_time, timezone, active, created_at, updated_at)
       VALUES ($1,$2,$3,'09:00','18:00','America/Sao_Paulo',TRUE,$4,$4)`, params: [randomUUID(), userId, day, now] });
   }
-  await transaction(statements);
   const user = { id: userId, organizationId, name, email, role: "ADMIN" as const, jobTitle, avatarUrl: null, organizationName, organizationSlug };
-  json(response, 201, { token: signToken(user, true), user: userView(user) });
+  const token = signToken(user, true);
+  await transaction(statements);
+  json(response, 201, { token, user: userView(user) });
 }
 
 async function login(request: ApiRequest, response: ApiResponse) {
@@ -439,7 +440,10 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     await ensureSchema();
     const method = request.method?.toUpperCase() ?? "GET";
     if (method === "OPTIONS") return empty(response);
-    if (method === "GET" && samePath(path, "health")) return json(response, 200, { status: "ok", database: "connected" });
+    if (method === "GET" && samePath(path, "health")) {
+      assertAuthConfigured();
+      return json(response, 200, { status: "ok", database: "connected", authentication: "configured" });
+    }
     if (method === "POST" && samePath(path, "auth", "register")) return await register(request, response);
     if (method === "POST" && samePath(path, "auth", "login")) return await login(request, response);
     if (method === "GET" && samePath(path, "public", "media", "*")) return await publicMedia(response, path[2]);

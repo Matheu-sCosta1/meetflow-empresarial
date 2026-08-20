@@ -4,11 +4,17 @@
   "buildCommand": "npm run build:vercel",
   "outputDirectory": "dist-vercel",
   "functions": {
-    "api/[...path].ts": {
+    "api/index.ts": {
       "maxDuration": 10,
       "memory": 1024
     }
   },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api?path=:path*"
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
