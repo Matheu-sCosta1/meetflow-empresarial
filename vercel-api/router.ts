@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { ApiRequest, ApiResponse, UploadedFile } from "./http";
-import { authenticated, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth";
-import { ensureSchema, query, transaction, type DbStatement } from "./db";
-import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, required } from "./http";
+import type { ApiRequest, ApiResponse, UploadedFile } from "./http.js";
+import { authenticated, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth.js";
+import { ensureSchema, query, transaction, type DbStatement } from "./db.js";
+import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, required } from "./http.js";
 
 type UnknownBody = Record<string, unknown>;
 type QueryRow = Record<string, unknown>;

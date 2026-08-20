@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
-import { query } from "./db";
+import { query } from "./db.js";
 
 export type AuthenticatedUser = {
   id: string;

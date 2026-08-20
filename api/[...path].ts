@@ -1,5 +1,5 @@
-import type { ApiRequest, ApiResponse } from "../vercel-api/http";
-import { route } from "../vercel-api/router";
+import type { ApiRequest, ApiResponse } from "../vercel-api/http.js";
+import { route } from "../vercel-api/router.js";
 
 export default async function handler(request: ApiRequest, response: ApiResponse) {
   const value = request.query.path;
