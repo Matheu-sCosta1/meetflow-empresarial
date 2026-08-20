@@ -134,8 +134,12 @@ export class MeetFlowApi {
       throw new Error("Não foi possível conectar ao MeetFlow. Verifique sua internet e tente novamente.");
     }
     if (!response.ok) {
-      const problem = await response.json().catch(() => null) as { detail?: string } | null;
-      if (problem?.detail) throw new Error(problem.detail);
+      const problem = await response.json().catch(() => null) as { detail?: string; error?: string } | null;
+      const message = problem?.detail || problem?.error;
+      if (message) throw new Error(message);
+      if (response.status === 401) throw new Error("Sua sessão expirou. Entre novamente para continuar.");
+      if (response.status === 413) throw new Error("O arquivo é grande demais. Fotos são otimizadas automaticamente e vídeos devem ter até 3 MB.");
+      if (response.status === 415) throw new Error("Este formato de arquivo não é compatível com o MeetFlow.");
       if (response.status === 404) throw new Error("O serviço do MeetFlow não foi encontrado. Atualize a página e tente novamente.");
       if (response.status >= 500) throw new Error("O MeetFlow está temporariamente indisponível. Tente novamente em instantes.");
       throw new Error(`Não foi possível concluir a operação (erro ${response.status}).`);

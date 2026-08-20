@@ -5,14 +5,16 @@ import {
   AlertTriangle, ArrowRight, BriefcaseBusiness, Building2, CalendarDays, Check,
   CheckCircle2, ChevronRight, Clock3, Eye, EyeOff, Hash, Home, ImagePlus, Loader2,
   LockKeyhole, LogOut, Mail, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck,
-  Sparkles, Trash2, UserPlus, Users, Video, X,
+  Sparkles, RefreshCw, Trash2, UserPlus, Users, Video, X,
 } from "lucide-react";
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AuthUser, Channel, ChatMessage, MeetFlowApi, Meeting, TeamMember, TeamStatus, meetFlowApi,
 } from "./lib/meetflow-api";
 
 const SESSION_KEY = "meetflow.local.session";
+const MAX_STATUS_UPLOAD_BYTES = 3_000_000;
+const MAX_STATUS_SOURCE_IMAGE_BYTES = 20_000_000;
 type Session = { token: string; user: AuthUser; remember: boolean };
 type View = "inicio" | "agenda" | "chat" | "status" | "equipe" | "configuracoes";
 type Modal = "meeting" | "channel" | "status" | "member" | "delete" | null;
@@ -30,19 +32,89 @@ function initials(name: string) {
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(value));
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", year: "numeric" }).format(date)
+    : "Data indisponível";
 }
 
 function formatTime(value: string) {
-  return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(date)
+    : "--:--";
 }
 
 function relativeTime(value: string) {
-  const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "agora";
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
   if (minutes < 1) return "agora";
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours} h` : `${Math.floor(hours / 24)} d`;
+}
+
+function fileSize(bytes: number) {
+  return `${(bytes / 1_000_000).toFixed(1).replace(".0", "")} MB`;
+}
+
+function canvasBlob(canvas: HTMLCanvasElement, type: string, quality: number) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Não foi possível otimizar esta imagem")), type, quality);
+  });
+}
+
+async function prepareStatusFile(file: File) {
+  const supported = new Set(["image/jpeg", "image/png", "image/webp", "video/mp4", "video/quicktime", "video/webm"]);
+  if (!supported.has(file.type.toLowerCase())) throw new Error("Use JPG, PNG, WebP, MP4, MOV ou WebM");
+  if (!file.size) throw new Error("O arquivo escolhido está vazio");
+  if (file.type.startsWith("video/")) {
+    if (file.size > MAX_STATUS_UPLOAD_BYTES) throw new Error(`O vídeo tem ${fileSize(file.size)}. Nesta versão, vídeos devem ter até 3 MB.`);
+    return file;
+  }
+  if (file.size <= MAX_STATUS_UPLOAD_BYTES) return file;
+  if (file.size > MAX_STATUS_SOURCE_IMAGE_BYTES) throw new Error(`A foto tem ${fileSize(file.size)}. Escolha uma imagem de até 20 MB.`);
+
+  const sourceUrl = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("Não foi possível abrir esta imagem"));
+      image.src = sourceUrl;
+    });
+    const scale = Math.min(1, 1920 / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Não foi possível otimizar esta imagem");
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    for (const quality of [0.82, 0.7, 0.58]) {
+      const blob = await canvasBlob(canvas, "image/webp", quality);
+      if (blob.size <= MAX_STATUS_UPLOAD_BYTES) {
+        const baseName = file.name.replace(/\.[^.]+$/, "") || "status";
+        const outputType = blob.type === "image/webp" ? "image/webp" : "image/png";
+        return new File([blob], `${baseName}.${outputType === "image/webp" ? "webp" : "png"}`, { type: outputType, lastModified: Date.now() });
+      }
+    }
+    throw new Error("A foto ainda ficou muito grande. Escolha outra imagem.");
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+  }
+}
+
+class DashboardErrorBoundary extends Component<{ children: ReactNode; onRecover: () => void }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() { return { failed: true }; }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return <section className="page-crash"><span><AlertTriangle /></span><h2>Esta página encontrou um problema</h2><p>O restante do MeetFlow continua funcionando. Você pode voltar ao início sem precisar atualizar o navegador.</p><button className="button button-primary" onClick={() => { this.setState({ failed: false }); this.props.onRecover(); }}>Voltar ao início</button></section>;
+  }
 }
 
 function localDateTime(offsetHours = 1) {
@@ -177,33 +249,59 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
   const [statuses, setStatuses] = useState<TeamStatus[]>([]);
   const [activeChannel, setActiveChannel] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
   const [story, setStory] = useState<TeamStatus | null>(null);
 
-  const showError = (reason: unknown) => setError(reason instanceof Error ? reason.message : "Algo deu errado");
+  const showError = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : "Algo deu errado"), []);
   const refresh = useCallback(async () => {
     const from = new Date(Date.now() - 30 * 86400000).toISOString();
     const to = new Date(Date.now() + 365 * 86400000).toISOString();
-    try {
-      const [meetingData, channelData, memberData, statusData] = await Promise.all([
-        api.meetings(from, to), api.channels(), api.team(), api.statuses(),
-      ]);
-      setMeetings(meetingData); setChannels(channelData); setMembers(memberData); setStatuses(statusData);
-      setActiveChannel((current) => current || channelData[0]?.id || "");
-    } catch (reason) { showError(reason); }
-    finally { setLoading(false); }
-  }, [api]);
+    const results = await Promise.allSettled([
+      api.meetings(from, to), api.channels(), api.team(), api.statuses(),
+    ]);
+    const [meetingResult, channelResult, memberResult, statusResult] = results;
+    if (meetingResult.status === "fulfilled") setMeetings(Array.isArray(meetingResult.value) ? meetingResult.value : []);
+    if (channelResult.status === "fulfilled") {
+      const nextChannels = Array.isArray(channelResult.value) ? channelResult.value : [];
+      setChannels(nextChannels);
+      setActiveChannel((current) => nextChannels.some((channel) => channel.id === current) ? current : nextChannels[0]?.id || "");
+    }
+    if (memberResult.status === "fulfilled") setMembers(Array.isArray(memberResult.value) ? memberResult.value : []);
+    if (statusResult.status === "fulfilled") setStatuses(Array.isArray(statusResult.value) ? statusResult.value : []);
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") showError(failed.reason);
+    else setError("");
+    setLoading(false);
+  }, [api, showError]);
 
   useEffect(() => { const timer = window.setTimeout(() => void refresh(), 0); return () => window.clearTimeout(timer); }, [refresh]);
   useEffect(() => {
-    if (!activeChannel) return;
+    if (view !== "chat" || !activeChannel) return;
     let alive = true;
-    const load = () => api.messages(activeChannel).then((data) => alive && setMessages(data)).catch(showError);
+    const load = async (silent = false) => {
+      if (!silent) setMessagesLoading(true);
+      try {
+        const data = await api.messages(activeChannel);
+        if (alive) setMessages(Array.isArray(data) ? data : []);
+      } catch (reason) {
+        if (alive) showError(reason);
+      } finally {
+        if (alive && !silent) setMessagesLoading(false);
+      }
+    };
     void load();
-    const timer = window.setInterval(load, 4000);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void load(true);
+    }, 5000);
     return () => { alive = false; window.clearInterval(timer); };
-  }, [activeChannel, api]);
+  }, [activeChannel, api, showError, view]);
 
-  function switchView(next: View) { setView(next); setSidebar(false); }
+  function switchView(next: View) {
+    setView(next);
+    setSidebar(false);
+    setStory(null);
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+  }
   function replaceUser(next: AuthUser) {
     setUser(next);
     onSession({ token: session.token, user: next, remember: session.remember });
@@ -227,14 +325,16 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
       <section className="main-area">
         <header className="topbar"><div className="topbar-title"><button className="menu-button" onClick={() => setSidebar(true)}><Menu /></button><div><span>{user.organizationName}</span><h1>{title}</h1></div></div><div className="topbar-actions"><span className="local-live"><i /> PostgreSQL conectado</span><button className="button button-primary" onClick={() => setModal("meeting")}><Plus /> Nova reunião</button></div></header>
         {error && <div className="error-banner"><AlertTriangle /><span>{error}</span><button onClick={() => setError("")}><X /></button></div>}
-        <div className="content page-enter">
-          {view === "inicio" && <Overview user={user} meetings={activeMeetings} channels={channels} statuses={statuses} members={members} onNavigate={switchView} onMeeting={() => setModal("meeting")} onStatus={() => setModal("status")} onStory={setStory} />}
-          {view === "agenda" && <Agenda meetings={meetings} onCreate={() => setModal("meeting")} onCancel={async (meeting) => { const reason = window.prompt("Motivo do cancelamento:", "Reunião cancelada pela equipe"); if (!reason) return; try { await api.cancelMeeting(meeting.id, reason); await refresh(); } catch (cause) { showError(cause); } }} />}
-          {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={setActiveChannel} messages={messages} user={user} api={api} onNewChannel={() => setModal("channel")} onSent={async () => setMessages(await api.messages(activeChannel))} onError={showError} />}
-          {view === "status" && <Statuses statuses={statuses} api={api} user={user} onCreate={() => setModal("status")} onStory={setStory} onDelete={async (id) => { try { await api.deleteStatus(id); await refresh(); } catch (cause) { showError(cause); } }} />}
-          {view === "equipe" && <Team members={members} api={api} currentUserId={user.id} canAdd={user.role === "ADMIN"} onAdd={() => setModal("member")} onRemove={async (id) => { if (!window.confirm("Desativar o acesso deste colaborador?")) return; try { await api.removeMember(id); await refresh(); } catch (cause) { showError(cause); } }} />}
-          {view === "configuracoes" && <ProfileSettings user={user} api={api} onUser={replaceUser} onLogout={logout} onDelete={() => setModal("delete")} onError={showError} />}
-        </div>
+        <DashboardErrorBoundary key={view} onRecover={() => { switchView("inicio"); void refresh(); }}>
+          <div className="content page-enter">
+            {view === "inicio" && <Overview user={user} meetings={activeMeetings} channels={channels} statuses={statuses} members={members} onNavigate={switchView} onMeeting={() => setModal("meeting")} onStatus={() => setModal("status")} onStory={setStory} />}
+            {view === "agenda" && <Agenda meetings={meetings} onCreate={() => setModal("meeting")} onCancel={async (meeting) => { const reason = window.prompt("Motivo do cancelamento:", "Reunião cancelada pela equipe"); if (!reason) return; try { await api.cancelMeeting(meeting.id, reason); await refresh(); } catch (cause) { showError(cause); } }} />}
+            {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={(id) => { setMessages([]); setActiveChannel(id); }} messages={messages} loading={messagesLoading} user={user} api={api} onNewChannel={() => setModal("channel")} onRefresh={async () => { setMessagesLoading(true); try { setMessages(await api.messages(activeChannel)); } finally { setMessagesLoading(false); } }} onSend={async (content) => { const sent = await api.sendMessage(activeChannel, content); setMessages((current) => current.some((message) => message.id === sent.id) ? current : [...current, sent]); }} onError={showError} />}
+            {view === "status" && <Statuses statuses={statuses} api={api} user={user} onCreate={() => setModal("status")} onStory={setStory} onDelete={async (id) => { try { await api.deleteStatus(id); await refresh(); } catch (cause) { showError(cause); } }} />}
+            {view === "equipe" && <Team members={members} api={api} currentUserId={user.id} canAdd={user.role === "ADMIN"} onAdd={() => setModal("member")} onRemove={async (id) => { if (!window.confirm("Desativar o acesso deste colaborador?")) return; try { await api.removeMember(id); await refresh(); } catch (cause) { showError(cause); } }} />}
+            {view === "configuracoes" && <ProfileSettings user={user} api={api} onUser={replaceUser} onLogout={logout} onDelete={() => setModal("delete")} onError={showError} />}
+          </div>
+        </DashboardErrorBoundary>
       </section>
       <nav className="mobile-nav">{nav.slice(0, 4).map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => switchView(item.id)}><item.icon />{item.label}</button>)}<button className={view === "configuracoes" ? "active" : ""} onClick={() => switchView("configuracoes")}><Settings />Ajustes</button></nav>
       {modal === "meeting" && <MeetingModal members={members.filter((member) => member.active)} onClose={() => setModal(null)} onSave={async (input) => { await api.createMeeting(input); setModal(null); await refresh(); }} onError={showError} />}
@@ -267,17 +367,44 @@ function Agenda({ meetings, onCreate, onCancel }: { meetings: Meeting[]; onCreat
   return <section className="subpage"><div className="page-head"><div><span className="section-kicker">PLANEJAMENTO</span><h2>Agenda empresarial</h2><p>Horários persistentes e protegidos contra conflitos.</p></div><button className="button button-primary" onClick={onCreate}><Plus /> Nova reunião</button></div><div className="calendar-summary"><div><CalendarDays /><span>Registros<strong>{meetings.length}</strong></span></div><div><CheckCircle2 /><span>Confirmadas<strong>{meetings.filter((m) => m.status !== "CANCELLED").length}</strong></span></div><p>Cada reunião criada fica salva no banco da empresa e estará disponível para toda a equipe.</p></div><section className="panel agenda-panel"><div className="meeting-list">{ordered.length ? ordered.map((meeting) => <MeetingRow key={meeting.id} meeting={meeting} onCancel={onCancel} />) : <Empty icon={CalendarDays} title="Nenhuma reunião" text="A agenda da empresa ainda está vazia." action="Criar reunião" onAction={onCreate} />}</div></section></section>;
 }
 
-function Chat({ channels, activeChannel, onChannel, messages, user, api, onNewChannel, onSent, onError }: { channels: Channel[]; activeChannel: string; onChannel: (id: string) => void; messages: ChatMessage[]; user: AuthUser; api: MeetFlowApi; onNewChannel: () => void; onSent: () => Promise<void>; onError: (reason: unknown) => void }) {
+function Chat({ channels, activeChannel, onChannel, messages, loading, user, api, onNewChannel, onRefresh, onSend, onError }: { channels: Channel[]; activeChannel: string; onChannel: (id: string) => void; messages: ChatMessage[]; loading: boolean; user: AuthUser; api: MeetFlowApi; onNewChannel: () => void; onRefresh: () => Promise<void>; onSend: (content: string) => Promise<void>; onError: (reason: unknown) => void }) {
   const [content, setContent] = useState("");
+  const [sending, setSending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
   const current = channels.find((channel) => channel.id === activeChannel);
-  useEffect(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), [messages]);
-  async function send(event: FormEvent) { event.preventDefault(); if (!content.trim() || !activeChannel) return; const value = content; setContent(""); try { await api.sendMessage(activeChannel, value); await onSent(); } catch (reason) { setContent(value); onError(reason); } }
-  return <section className="chat-shell"><aside className="conversation-list"><header><div><span className="section-kicker">CONVERSAS</span><h2>Canais</h2></div><button className="icon-button" onClick={onNewChannel} title="Novo canal"><Plus /></button></header><span className="conversation-label">CANAIS DA EMPRESA</span>{channels.map((channel) => <button key={channel.id} className={`conversation${activeChannel === channel.id ? " active" : ""}`} onClick={() => onChannel(channel.id)}><span className="channel-avatar"><Hash /></span><div><strong>{channel.name}</strong><small>Canal compartilhado</small></div></button>)}</aside><article className="chat-room"><header><div><span className="channel-avatar"><Hash /></span><div><strong>{current?.name ?? "Selecione um canal"}</strong><small><i /> equipe online</small></div></div></header><div className="messages"><div className="day-divider"><span>Mensagens</span></div>{messages.length ? messages.map((message) => <div key={message.id} className={`message-row${message.senderId === user.id ? " own" : ""}`}><Avatar name={message.senderName} api={api} small /><div><span><strong>{message.senderName}</strong><time>{formatTime(message.createdAt)}</time></span><p>{message.content}</p></div></div>) : <Empty icon={MessageCircle} title="Comece a conversa" text="As mensagens aparecerão para todos neste canal." />}<div ref={endRef} /></div><form className="composer" onSubmit={send}><input value={content} onChange={(event) => setContent(event.target.value)} maxLength={4000} placeholder={`Mensagem em #${current?.name ?? "canal"}`} disabled={!current} /><button className="send-button" aria-label="Enviar mensagem" disabled={!content.trim()}><Send /></button></form></article></section>;
+  useEffect(() => {
+    const list = messageListRef.current;
+    if (list) list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+  }, [messages]);
+
+  async function send(event?: FormEvent) {
+    event?.preventDefault();
+    const value = content.trim();
+    if (!value || !activeChannel || sending) return;
+    setSending(true);
+    setContent("");
+    try { await onSend(value); }
+    catch (reason) { setContent(value); onError(reason); }
+    finally { setSending(false); }
+  }
+
+  return <section className="chat-shell">
+    <aside className="conversation-list">
+      <header><div><span className="section-kicker">CONVERSAS</span><h2>Canais <small>{channels.length}</small></h2></div><button className="icon-button" onClick={onNewChannel} title="Novo canal" aria-label="Criar canal"><Plus /></button></header>
+      <span className="conversation-label">CANAIS DA EMPRESA</span>
+      <div className="conversation-scroll">{channels.map((channel) => <button key={channel.id} className={`conversation${activeChannel === channel.id ? " active" : ""}`} onClick={() => onChannel(channel.id)}><span className="channel-avatar"><Hash /></span><div><strong>{channel.name}</strong><small>Canal compartilhado</small></div></button>)}</div>
+    </aside>
+    <article className="chat-room">
+      <header><div><span className="channel-avatar"><Hash /></span><div><strong>{current?.name ?? "Selecione um canal"}</strong><small><i /> mensagens sincronizadas</small></div></div><button className="chat-refresh" onClick={() => void onRefresh().catch(onError)} disabled={loading || !current} title="Atualizar mensagens" aria-label="Atualizar mensagens"><RefreshCw className={loading ? "spin" : ""} /></button></header>
+      <div className="messages" ref={messageListRef}><div className="day-divider"><span>{loading ? "Atualizando" : "Mensagens"}</span></div>{messages.length ? messages.map((message) => <div key={message.id} className={`message-row${message.senderId === user.id ? " own" : ""}`}><Avatar name={message.senderName} api={api} small /><div><span><strong>{message.senderName}</strong><time>{formatTime(message.createdAt)}</time></span><p>{message.content}</p></div></div>) : !loading && <Empty icon={MessageCircle} title="Comece a conversa" text="As mensagens aparecerão para todos neste canal." />}<div ref={endRef} /></div>
+      <form className="composer" onSubmit={send}><textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder={`Mensagem em #${current?.name ?? "canal"}`} disabled={!current || sending} aria-label="Escrever mensagem" /><span>{content.length}/4000</span><button className="send-button" aria-label="Enviar mensagem" disabled={!content.trim() || sending}>{sending ? <Loader2 className="spin" /> : <Send />}</button></form>
+    </article>
+  </section>;
 }
 
 function Statuses({ statuses, api, user, onCreate, onStory, onDelete }: { statuses: TeamStatus[]; api: MeetFlowApi; user: AuthUser; onCreate: () => void; onStory: (status: TeamStatus) => void; onDelete: (id: string) => void }) {
-  return <section className="subpage"><div className="page-head"><div><span className="section-kicker">ATUALIZAÇÕES EM 24 HORAS</span><h2>Status da equipe</h2><p>Compartilhe novidades rápidas em texto, foto ou vídeo.</p></div><button className="button button-primary" onClick={onCreate}><ImagePlus /> Publicar status</button></div><div className="status-grid"><button className="status-card create-card" onClick={onCreate}><span><Plus /></span><strong>Novo status</strong><small>Imagem, vídeo ou texto</small></button>{statuses.map((status) => <article className="status-card" key={status.id} onClick={() => onStory(status)} role="button" tabIndex={0}>{status.mediaType === "IMAGE" && status.mediaUrl && <img src={api.mediaUrl(status.mediaUrl)} alt="Status" />}{status.mediaType === "VIDEO" && status.mediaUrl && <video src={api.mediaUrl(status.mediaUrl)} muted />}{status.mediaType === "TEXT" && <span className="status-quote">“</span>}<div className="status-card-overlay"><span className="avatar avatar-fallback">{initials(status.authorName)}</span><span><strong>{status.authorName}</strong><small>{relativeTime(status.createdAt)}</small></span>{status.authorId === user.id && <button className="status-delete" onClick={(event) => { event.stopPropagation(); onDelete(status.id); }}><Trash2 /></button>}</div><p>{status.caption}</p></article>)}</div></section>;
+  return <section className="subpage"><div className="page-head"><div><span className="section-kicker">ATUALIZAÇÕES EM 24 HORAS</span><h2>Status da equipe</h2><p>Compartilhe novidades rápidas em texto, foto ou vídeo.</p></div><button className="button button-primary" onClick={onCreate}><ImagePlus /> Publicar status</button></div><div className="status-grid"><button className="status-card create-card" onClick={onCreate}><span><Plus /></span><strong>Novo status</strong><small>Imagem, vídeo ou texto</small></button>{statuses.map((status) => <article className="status-card" key={status.id} onClick={() => onStory(status)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onStory(status); } }} role="button" tabIndex={0}>{status.mediaType === "IMAGE" && status.mediaUrl && <img src={api.mediaUrl(status.mediaUrl)} alt="Status" />}{status.mediaType === "VIDEO" && status.mediaUrl && <video src={api.mediaUrl(status.mediaUrl)} muted />}{status.mediaType === "TEXT" && <span className="status-quote">“</span>}<div className="status-card-overlay"><span className="avatar avatar-fallback">{initials(status.authorName)}</span><span><strong>{status.authorName}</strong><small>{relativeTime(status.createdAt)}</small></span>{status.authorId === user.id && <button className="status-delete" aria-label="Excluir status" onClick={(event) => { event.stopPropagation(); onDelete(status.id); }}><Trash2 /></button>}</div><p>{status.caption}</p></article>)}</div></section>;
 }
 
 function Team({ members, api, currentUserId, canAdd, onAdd, onRemove }: { members: TeamMember[]; api: MeetFlowApi; currentUserId: string; canAdd: boolean; onAdd: () => void; onRemove: (id: string) => void }) {
@@ -300,15 +427,44 @@ function MeetingModal({ members, onClose, onSave, onError }: { members: TeamMemb
   return <div className="modal-backdrop"><section className="modal"><header><div><span className="section-kicker">AGENDA EMPRESARIAL</span><h2>Nova reunião</h2></div><button onClick={onClose}><X /></button></header><form onSubmit={submit}><label>Título<input name="title" required maxLength={160} placeholder="Alinhamento semanal" /></label><label>Responsável<select name="ownerId" required>{members.map((member) => <option value={member.id} key={member.id}>{member.name} — {member.jobTitle}</option>)}</select></label><div className="form-row two"><label>Início<input name="startAt" type="datetime-local" required defaultValue={start} /></label><label>Término<input name="endAt" type="datetime-local" required defaultValue={end} /></label></div><div className="form-row two"><label>Formato<select name="mode"><option value="VIDEO">Videoconferência</option><option value="IN_PERSON">Presencial</option></select></label><label>Local ou link<input name="location" maxLength={300} placeholder="Sala 2 ou link" /></label></div><label>Convidados por e-mail<input name="guests" placeholder="ana@empresa.com, joao@cliente.com" /></label><label>Observações<textarea name="notes" rows={3} maxLength={2000} placeholder="Pauta e informações importantes" /></label><div className="modal-note"><ShieldCheck /> O sistema impede dois compromissos no mesmo horário para o responsável.</div><footer><button type="button" className="button button-soft" onClick={onClose}>Cancelar</button><button className="button button-primary" disabled={busy}>{busy && <Loader2 className="spin" />}Criar reunião</button></footer></form></section></div>;
 }
 
-function SimpleModal({ title, kicker, children, onClose, onSubmit, onError }: { title: string; kicker: string; children: ReactNode; onClose: () => void; onSubmit: (form: FormData) => Promise<void>; onError: (reason: unknown) => void }) {
+function SimpleModal({ title, kicker, children, submitLabel = "Salvar", onClose, onSubmit, onError }: { title: string; kicker: string; children: ReactNode; submitLabel?: string; onClose: () => void; onSubmit: (form: FormData) => Promise<void>; onError: (reason: unknown) => void }) {
   const [busy, setBusy] = useState(false);
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy(true); try { await onSubmit(new FormData(event.currentTarget)); } catch (reason) { onError(reason); } finally { setBusy(false); } }
-  return <div className="modal-backdrop"><section className="modal modal-small"><header><div><span className="section-kicker">{kicker}</span><h2>{title}</h2></div><button onClick={onClose}><X /></button></header><form onSubmit={submit}>{children}<footer><button type="button" className="button button-soft" onClick={onClose}>Cancelar</button><button className="button button-primary" disabled={busy}>{busy && <Loader2 className="spin" />}Salvar</button></footer></form></section></div>;
+  const [localError, setLocalError] = useState("");
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy(true); setLocalError(""); try { await onSubmit(new FormData(event.currentTarget)); } catch (reason) { const message = reason instanceof Error ? reason.message : "Não foi possível salvar"; setLocalError(message); onError(reason); } finally { setBusy(false); } }
+  return <div className="modal-backdrop"><section className="modal modal-small"><header><div><span className="section-kicker">{kicker}</span><h2>{title}</h2></div><button onClick={onClose} aria-label="Fechar"><X /></button></header><form onSubmit={submit}>{localError && <div className="form-error modal-error"><AlertTriangle />{localError}</div>}{children}<footer><button type="button" className="button button-soft" onClick={onClose}>Cancelar</button><button className="button button-primary" disabled={busy}>{busy && <Loader2 className="spin" />}{busy ? "Enviando..." : submitLabel}</button></footer></form></section></div>;
 }
 
 function StatusModal({ onClose, onSave, onError }: { onClose: () => void; onSave: (caption: string, file?: File) => Promise<void>; onError: (reason: unknown) => void }) {
+  const [kind, setKind] = useState<"TEXT" | "MEDIA">("TEXT");
   const [file, setFile] = useState<File>();
-  return <SimpleModal title="Publicar status" kicker="VISÍVEL POR 24 HORAS" onClose={onClose} onError={onError} onSubmit={async (form) => onSave(String(form.get("caption")), file)}><label className="upload-zone"><ImagePlus /><strong>{file ? file.name : "Escolher foto ou vídeo"}</strong><span>JPG, PNG, WebP, MP4, MOV ou WebM</span><input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm" onChange={(event) => setFile(event.target.files?.[0])} /></label><label>Legenda<textarea name="caption" rows={4} maxLength={1000} placeholder="Conte uma novidade para sua equipe..." /></label></SimpleModal>;
+  const [fileError, setFileError] = useState("");
+  const previewUrl = useMemo(() => file ? URL.createObjectURL(file) : "", [file]);
+
+  useEffect(() => {
+    return () => { if (previewUrl) URL.revokeObjectURL(previewUrl); };
+  }, [previewUrl]);
+
+  function chooseFile(next?: File) {
+    setFileError("");
+    if (!next) { setFile(undefined); return; }
+    const supported = new Set(["image/jpeg", "image/png", "image/webp", "video/mp4", "video/quicktime", "video/webm"]);
+    if (!supported.has(next.type.toLowerCase())) { setFile(undefined); setFileError("Use JPG, PNG, WebP, MP4, MOV ou WebM"); return; }
+    if (next.type.startsWith("video/") && next.size > MAX_STATUS_UPLOAD_BYTES) { setFile(undefined); setFileError(`O vídeo tem ${fileSize(next.size)}. Escolha um vídeo de até 3 MB.`); return; }
+    if (next.type.startsWith("image/") && next.size > MAX_STATUS_SOURCE_IMAGE_BYTES) { setFile(undefined); setFileError(`A foto tem ${fileSize(next.size)}. Escolha uma imagem de até 20 MB.`); return; }
+    setFile(next);
+  }
+
+  return <SimpleModal title="Publicar status" kicker="VISÍVEL POR 24 HORAS" submitLabel="Publicar agora" onClose={onClose} onError={onError} onSubmit={async (form) => {
+    const caption = String(form.get("caption") || "").trim();
+    if (kind === "TEXT" && !caption) throw new Error("Escreva uma mensagem para publicar o status");
+    if (kind === "MEDIA" && !file) throw new Error("Escolha uma foto ou um vídeo para publicar");
+    await onSave(caption, file ? await prepareStatusFile(file) : undefined);
+  }}>
+    <div className="status-kind-tabs"><button type="button" className={kind === "TEXT" ? "active" : ""} onClick={() => { setKind("TEXT"); setFile(undefined); setFileError(""); }}><MessageCircle /> Somente texto</button><button type="button" className={kind === "MEDIA" ? "active" : ""} onClick={() => setKind("MEDIA")}><ImagePlus /> Foto ou vídeo</button></div>
+    {kind === "MEDIA" && <><label className={`upload-zone${previewUrl ? " has-preview" : ""}`}>{previewUrl ? (file?.type.startsWith("video/") ? <video src={previewUrl} muted /> : <img src={previewUrl} alt="Prévia do status" />) : <ImagePlus />}<strong>{file ? file.name : "Escolher foto ou vídeo"}</strong><span>{file ? `${fileSize(file.size)} · toque para trocar` : "Fotos são otimizadas automaticamente · vídeos até 3 MB"}</span><input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm" onChange={(event) => chooseFile(event.target.files?.[0])} /></label>{fileError && <div className="form-error modal-error"><AlertTriangle />{fileError}</div>}</>}
+    <label>{kind === "TEXT" ? "Mensagem" : "Legenda (opcional)"}<textarea name="caption" rows={4} maxLength={1000} placeholder={kind === "TEXT" ? "O que você quer compartilhar com a equipe?" : "Adicione uma legenda à publicação..."} /></label>
+    <div className="status-publish-note"><CheckCircle2 /> O status fica disponível para sua empresa por 24 horas.</div>
+  </SimpleModal>;
 }
 
 function MemberModal({ onClose, onSave, onError }: { onClose: () => void; onSave: (input: { name: string; email: string; password: string; jobTitle: string; role: "ADMIN" | "MEMBER" }) => Promise<void>; onError: (reason: unknown) => void }) {

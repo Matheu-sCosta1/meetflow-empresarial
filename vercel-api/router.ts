@@ -305,6 +305,7 @@ async function listStatuses(response: ApiResponse, organizationId: string) {
 }
 
 function validateStatusFile(file: UploadedFile) {
+  if (!file.content.length) throw new HttpError(400, "O arquivo escolhido está vazio");
   if (!IMAGE_TYPES.has(file.mimeType) && !VIDEO_TYPES.has(file.mimeType)) {
     throw new HttpError(415, "Use JPG, PNG, WebP, MP4, MOV ou WebM");
   }
