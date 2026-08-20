@@ -1,83 +1,57 @@
 # MeetFlow Empresarial
 
-Plataforma empresarial para organizar reuniões, compartilhar links de agendamento, conversar em equipe e publicar status com foto ou vídeo por 24 horas.
+Plataforma empresarial para organizar reuniões, conversar com a equipe, administrar colaboradores e publicar status com foto ou vídeo por 24 horas.
 
-## O que já existe
+## Recursos disponíveis
 
-- landing page, entrada segura e cadastro inicial do workspace;
-- painel responsivo para desktop e celular;
+- cadastro de empresa e primeiro administrador;
+- login individual com senha protegida e sessão JWT;
+- empresas isoladas por `organizationId`;
 - perfis profissionais com foto, nome e cargo;
-- configurações de perfil, workspace, sessão e exclusão de conta;
-- colaboradores ativos, contas individuais e níveis de acesso;
-- agenda semanal e criação rápida de reuniões;
-- prevenção de conflitos de horário no backend;
-- tipos de reunião com link público de agendamento;
-- disponibilidade semanal por usuário;
-- cadastro, login e autorização com JWT;
-- empresas isoladas, administradores e membros de equipe;
-- canais de chat, histórico e atualização em tempo real via WebSocket;
-- status de texto, foto ou vídeo com expiração automática em 24 horas;
-- envio de confirmação por AWS SES, com modo de log para desenvolvimento;
-- migrations PostgreSQL com Flyway;
-- documentação Swagger/OpenAPI;
-- execução completa com Docker Compose.
+- configurações de perfil, empresa, senha, saída e exclusão de conta;
+- colaboradores com níveis `ADMIN` e `MEMBER`;
+- agenda compartilhada e prevenção de conflitos de horário;
+- canais de chat com histórico persistente;
+- status de texto, foto ou vídeo com expiração em 24 horas;
+- interface responsiva para desktop e celular;
+- carrossel de status e painel empresarial sem dados de demonstração.
 
-## Tecnologias
+## Arquitetura
 
-| Camada | Tecnologias |
-| --- | --- |
-| Interface | React 19, TypeScript, Vinext e CSS responsivo |
-| Hospedagem | Sites, autenticação integrada, D1 e R2 |
-| API | Java 17, Spring Boot, Spring Security e Bean Validation |
-| Dados | Spring Data JPA, PostgreSQL e Flyway |
-| Tempo real | Spring WebSocket com STOMP |
-| E-mail | AWS SDK e Amazon SES |
-| Infraestrutura | Docker e Docker Compose |
+O repositório possui duas formas de execução:
 
-## Estrutura
+| Ambiente | Interface | API | Banco |
+| --- | --- | --- | --- |
+| Nuvem | React + Vite na Vercel | Funções TypeScript na Vercel | PostgreSQL Neon |
+| Local | React no Docker | Java 17 + Spring Boot | PostgreSQL no Docker |
+
+A versão hospedada utiliza a mesma origem para a interface e a API (`/api`). Isso elimina a dependência do Render e não exige cartão para a validação inicial. O backend Java continua disponível para uma futura infraestrutura dedicada.
+
+## Estrutura principal
 
 ```text
 meetflow-empresarial/
-├── app/                    # interface web
-├── db/                     # esquema do banco da versão hospedada
-├── drizzle/                # migrations D1 versionadas
-├── backend/
-│   ├── src/main/java/      # API Spring Boot
-│   ├── src/main/resources/ # configurações e migrations
-│   ├── Dockerfile
-│   └── pom.xml
-├── compose.yaml            # web + API + PostgreSQL
-├── Dockerfile.web
-└── .env.example
+├── api/                    # entrada das funções serverless da Vercel
+├── vercel-api/             # autenticação, banco e regras da API hospedada
+├── vercel/                 # entrada da interface estática na Vercel
+├── app/                    # componentes e cliente compartilhados
+├── backend/                # API Java/Spring Boot para execução local
+├── compose.yaml            # web + Java + PostgreSQL locais
+├── vercel.json             # build e funções da Vercel
+└── .env.example            # exemplos sem credenciais reais
 ```
 
-O backend está organizado por domínio: `auth`, `meeting`, `chat`, `status`, `team`, `security`, `repository` e `domain`. A versão hospedada usa rotas server-side próprias, sempre protegidas pela identidade da plataforma e pelo vínculo do usuário ao workspace.
-
-## Versão hospedada
-
-A aplicação publicada não usa mais listas locais nem dados de demonstração. Cada pessoa entra com uma identidade verificada e conclui o cadastro do perfil ou aceita um convite existente.
-
-- D1 guarda empresas, perfis, membros, reuniões, canais, mensagens e metadados dos status;
-- R2 guarda fotos de perfil, imagens e vídeos;
-- todas as consultas são limitadas ao `organizationId` da sessão;
-- a agenda rejeita reuniões conflitantes;
-- o chat é atualizado automaticamente entre as pessoas conectadas;
-- status vencidos deixam de aparecer após 24 horas;
-- a conta só é excluída após confirmação explícita.
-
-As principais rotas da aplicação hospedada ficam em `app/api`. O backend Java/PostgreSQL continua no repositório como implantação independente para infraestrutura própria.
-
-## Rodar o produto local completo
+## Rodar localmente com Docker
 
 Pré-requisito: Docker Desktop ou Docker Engine com o plugin Compose.
 
-1. Crie o arquivo de configuração local:
+1. Crie a configuração local:
 
    ```bash
    cp .env.example .env
    ```
 
-2. Inicie todos os serviços em segundo plano:
+2. Inicie os serviços:
 
    ```bash
    docker compose up --build -d
@@ -90,9 +64,7 @@ Pré-requisito: Docker Desktop ou Docker Engine com o plugin Compose.
    - Swagger: `http://localhost:8080/swagger-ui.html`
    - Saúde da API: `http://localhost:8080/actuator/health`
 
-O PostgreSQL fica disponível em `localhost:5432`. Os dados e as mídias usam volumes Docker e permanecem após reiniciar os contêineres.
-
-O modo local é ativado automaticamente pelo Docker Compose. A interface chama a API Spring Boot em `localhost:8080`, e a API grava no PostgreSQL do contêiner `postgres`. Não é necessário configurar essa ligação manualmente.
+O frontend local já chama o Spring Boot em `localhost:8080`, que grava no PostgreSQL do contêiner. Os dados permanecem nos volumes após reiniciar a máquina.
 
 Para encerrar:
 
@@ -100,7 +72,7 @@ Para encerrar:
 docker compose down
 ```
 
-Para também apagar o banco e as mídias locais:
+Para também apagar banco e mídias locais:
 
 ```bash
 docker compose down --volumes
@@ -108,11 +80,58 @@ docker compose down --volumes
 
 ## Primeiro acesso
 
-Abra `http://localhost:3000`, escolha **Criar empresa** e preencha nome, empresa, e-mail e senha. Esse cadastro é real: ele cria a organização, o primeiro administrador, a disponibilidade padrão e o canal `Geral` no PostgreSQL.
+Abra a aplicação, selecione **Criar empresa** e informe nome, empresa, e-mail e senha. O sistema cria no PostgreSQL:
 
-Depois disso, o administrador pode cadastrar colaboradores em **Colaboradores**. Cada pessoa recebe uma conta própria e já pode entrar pela mesma tela com o e-mail e a senha inicial. Não há usuários, reuniões ou mensagens de demonstração.
+- a organização;
+- o primeiro administrador;
+- os horários-padrão de segunda a sexta;
+- o canal `Geral`.
 
-## Rotas principais
+Depois, o administrador pode cadastrar colaboradores. Cada pessoa recebe uma conta própria e entra com o e-mail e a senha inicial. Não existem usuários ou mensagens de demonstração.
+
+## Deploy gratuito na Vercel
+
+### Variáveis necessárias
+
+A integração Neon conectada ao projeto deve fornecer:
+
+```text
+MEETFLOW_DB_URL=postgresql://...
+```
+
+A API também reconhece os nomes `MEETFLOW_DB_DATABASE_URL` e `MEETFLOW_DB_POSTGRES_URL`, usados por algumas versões da integração.
+
+Adicione também uma chave aleatória com pelo menos 32 caracteres, marcada para Production e Preview. A API aceita qualquer um destes nomes:
+
+```text
+MEETFLOW_JWT_SECRET=uma-chave-aleatoria-longa
+# ou JWT_SECRET=uma-chave-aleatoria-longa
+```
+
+Nunca salve os valores reais no GitHub.
+
+### Publicação
+
+1. importe o repositório na Vercel;
+2. conecte o banco Neon ao projeto com o prefixo `MEETFLOW_DB`;
+3. cadastre `MEETFLOW_JWT_SECRET` ou mantenha o `JWT_SECRET` já existente;
+4. publique a branch `main`.
+
+O arquivo `vercel.json` executa o build da interface e publica a função `api/[...path].ts`. As tabelas são criadas automaticamente na primeira chamada à API.
+
+Para confirmar o banco e a função:
+
+```text
+GET https://seu-dominio.vercel.app/api/health
+```
+
+Resposta esperada:
+
+```json
+{"status":"ok","database":"connected"}
+```
+
+## Rotas hospedadas
 
 | Método e rota | Finalidade |
 | --- | --- |
@@ -125,75 +144,60 @@ Depois disso, o administrador pode cadastrar colaboradores em **Colaboradores**.
 | `DELETE /api/account` | Desativar a própria conta |
 | `GET/POST /api/meetings` | Listar e criar reuniões |
 | `PATCH /api/meetings/{id}/cancel` | Cancelar reunião |
-| `GET/POST /api/meeting-types` | Gerenciar tipos e links públicos |
-| `GET/POST /api/availability` | Configurar disponibilidade |
-| `GET /api/public/meeting-types/{slug}` | Abrir tipo público |
-| `GET /api/public/meeting-types/{slug}/slots?date=AAAA-MM-DD` | Consultar horários livres |
-| `POST /api/public/meeting-types/{slug}/book` | Reservar horário público |
 | `GET/POST /api/chat/channels` | Listar e criar canais |
 | `GET/POST /api/chat/channels/{id}/messages` | Histórico e envio de mensagens |
 | `GET/POST /api/statuses` | Listar e publicar status |
-| `DELETE /api/statuses/{id}` | Excluir o próprio status |
+| `DELETE /api/statuses/{id}` | Excluir status próprio |
 | `GET/POST /api/team` | Listar e cadastrar colaboradores |
-| `DELETE /api/team/{id}` | Desativar um colaborador |
+| `DELETE /api/team/{id}` | Desativar colaborador |
+| `GET /api/public/media/{id}` | Exibir mídia ativa por identificador seguro |
 
-Clientes do chat recebem novas mensagens no tópico STOMP `/topic/channels/{channelId}`. O handshake é feito em `/ws` e o cliente deve enviar `Authorization: Bearer SEU_TOKEN` no frame STOMP `CONNECT`.
+Todas as rotas privadas validam o JWT e limitam consultas à empresa do usuário autenticado.
 
-## Fotos e vídeos de status
+## Fotos e vídeos
 
-No desenvolvimento, os arquivos ficam no volume `meetflow_media`. Formatos aceitos:
+Na hospedagem gratuita, imagens, vídeos e avatares ficam no PostgreSQL Neon. Cada arquivo é limitado a 3,5 MB para respeitar os limites das funções serverless. São aceitos:
 
 - JPG, PNG e WebP;
-- MP4, MOV e WebM;
-- até 100 MB por publicação.
+- MP4, MOV e WebM.
 
-Um processo agendado remove do banco e do armazenamento os status vencidos. Para produção em múltiplas instâncias, o próximo passo recomendado é trocar o armazenamento local por Amazon S3 ou outro armazenamento de objetos.
+Para operação comercial, migre as mídias para armazenamento de objetos, como Amazon S3, Cloudflare R2 ou Vercel Blob.
 
-## Configurar AWS SES
+## Desenvolvimento e qualidade
 
-O padrão é `MAIL_MODE=log`: a confirmação aparece apenas nos logs do backend e nenhuma mensagem é enviada.
+Validações do frontend e da API serverless:
 
-Para usar o SES:
+```bash
+npm ci
+npm run lint
+npm run typecheck:vercel
+npm run build:vercel
+```
 
-1. verifique o domínio ou remetente na AWS;
-2. configure credenciais AWS no ambiente de execução;
-3. altere `MAIL_MODE=ses`;
-4. defina `AWS_REGION` e `AWS_SES_FROM`.
+Testes do backend Java:
 
-As credenciais AWS não devem ser colocadas no repositório ou no arquivo `.env` compartilhado.
+```bash
+mvn --batch-mode --file backend/pom.xml test
+```
 
-## Decisões de arquitetura
+O workflow em `.github/workflows/ci.yml` executa essas verificações em pushes para `main` e pull requests.
 
-- O ambiente hospedado usa identidade integrada, D1 e R2 para funcionar sem dados locais.
-- A implantação Docker mantém Spring Boot, JWT e PostgreSQL para empresas que preferem infraestrutura própria.
-- O chat hospedado usa sincronização periódica; o backend Spring fornece WebSocket/STOMP para tempo real em uma implantação dedicada.
-- O armazenamento local do backend Java é adequado ao desenvolvimento. Em múltiplas instâncias, use S3 ou outro armazenamento de objetos.
-- Google Meet, Microsoft Teams, Zoom e calendários externos permanecem como integrações opcionais.
+## Limites do plano gratuito
+
+- o Neon gratuito possui limites de armazenamento e computação;
+- arquivos ficam limitados a 3,5 MB nesta implantação;
+- o chat consulta mensagens periodicamente; WebSocket/STOMP permanece no backend Java;
+- confirmações por AWS SES permanecem no backend Java e ainda não são enviadas pelas funções serverless;
+- backups, monitoramento, e-mail transacional e armazenamento de objetos devem ser configurados antes da venda.
+
+> O plano Hobby da Vercel é voltado a uso pessoal e não comercial. Esta estrutura sem cartão serve para desenvolver, testar e demonstrar o MeetFlow. Antes de vender ou atender clientes, migre para um plano e serviços que permitam uso comercial e ofereçam os níveis necessários de segurança, backup e disponibilidade.
 
 ## Próximas evoluções
 
-1. envio de convite e lembretes por e-mail;
+1. convites e lembretes por e-mail;
 2. integração com Google Calendar, Outlook, Meet, Teams e Zoom;
-3. notificações dentro do produto e lembretes agendados;
-4. confirmação de presença e reagendamento pelo convidado;
-5. status com visualizações, respostas e reações;
-6. processamento e miniaturas de vídeo;
-7. testes de integração com Testcontainers e pipeline de CI.
-
-## Desenvolvimento sem Docker
-
-Backend:
-
-```bash
-cd backend
-mvn spring-boot:run
-```
-
-Interface:
-
-```bash
-npm install
-npm run dev
-```
-
-Nesse modo, mantenha PostgreSQL disponível e configure as variáveis descritas em `.env.example`.
+3. notificações internas e confirmação de presença;
+4. reagendamento pelo convidado;
+5. reações e respostas nos status;
+6. armazenamento de objetos e miniaturas de vídeo;
+7. testes de integração e monitoramento de produção.

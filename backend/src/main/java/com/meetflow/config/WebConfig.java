@@ -14,6 +14,7 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        if (storageProperties.databaseEnabled()) return;
         String location = Path.of(storageProperties.path()).toAbsolutePath().normalize().toUri().toString();
         registry.addResourceHandler("/media/**").addResourceLocations(location);
     }
