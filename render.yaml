@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: meetflow-api
+    runtime: docker
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_USERNAME
+        sync: false
+      - key: DATABASE_PASSWORD
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: APP_CORS_ORIGINS
+        value: https://meetflow-empresarial.vercel.app
+      - key: APP_FRONTEND_URL
+        sync: false
+      - key: STORAGE_MODE
+        value: database
+      - key: STORAGE_DATABASE_MAX_BYTES
+        value: "12582912"
+      - key: DATABASE_POOL_SIZE
+        value: "3"
+      - key: MAIL_MODE
+        value: log
+      - key: JAVA_TOOL_OPTIONS
+        value: -XX:MaxRAMPercentage=75.0 -XX:+UseSerialGC

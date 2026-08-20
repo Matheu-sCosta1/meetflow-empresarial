@@ -162,6 +162,59 @@ Para usar o SES:
 
 As credenciais AWS não devem ser colocadas no repositório ou no arquivo `.env` compartilhado.
 
+## Deploy gratuito para validação
+
+A implantação web foi separada em três serviços:
+
+| Parte | Serviço | Configuração no repositório |
+| --- | --- | --- |
+| Interface | Vercel | `vercel.json` e `vite.vercel.config.ts` |
+| API Spring Boot | Render | `render.yaml` e `backend/Dockerfile` |
+| PostgreSQL | Neon | migrations Flyway em `backend/src/main/resources/db/migration` |
+
+### 1. Criar o PostgreSQL no Neon
+
+Crie um projeto gratuito e copie host, banco, usuário e senha. No Render, preencha:
+
+```text
+DATABASE_URL=jdbc:postgresql://SEU_HOST/SEU_BANCO?sslmode=require
+DATABASE_USERNAME=SEU_USUARIO
+DATABASE_PASSWORD=SUA_SENHA
+```
+
+As migrations do Flyway criam as tabelas automaticamente no primeiro início. No modo gratuito de nuvem, fotos e vídeos também ficam no PostgreSQL para não serem apagados quando o Render hibernar. Cada arquivo é limitado a 12 MB.
+
+### 2. Criar a API no Render
+
+Entre no Render usando o GitHub, escolha **New > Blueprint**, conecte este repositório e aplique o arquivo `render.yaml`. Preencha as três variáveis do Neon e use temporariamente a URL da Vercel em `APP_FRONTEND_URL` quando ela estiver disponível.
+
+Ao concluir, copie a URL pública, por exemplo:
+
+```text
+https://meetflow-api.onrender.com
+```
+
+### 3. Criar a interface na Vercel
+
+Importe o repositório na Vercel. O arquivo `vercel.json` seleciona automaticamente o build estático compatível. Antes de implantar, adicione esta variável nos ambientes Production, Preview e Development:
+
+```text
+VITE_API_URL=https://SUA-API.onrender.com/api
+```
+
+Depois do deploy, abra a URL `.vercel.app`, escolha **Criar empresa** e faça o primeiro cadastro real.
+
+### Limites do plano gratuito
+
+- o backend gratuito do Render hiberna após um período sem acessos e a primeira abertura pode demorar cerca de um minuto;
+- o Neon gratuito possui limite de armazenamento, portanto os uploads devem ser usados apenas para validação;
+- o envio de e-mail continua em `MAIL_MODE=log` até o AWS SES ser configurado;
+- para domínio comercial na Vercel, adicione o domínio também em `APP_CORS_ORIGINS` no Render.
+
+Esse ambiente gratuito é indicado para desenvolvimento, demonstração e validação. Antes de cobrar clientes, migre para planos de produção com backup, disponibilidade e armazenamento de objetos.
+
+> A Vercel classifica o plano Hobby como pessoal e não comercial. Ele pode ser usado para testar e demonstrar o MeetFlow, mas a operação de venda deve migrar para o plano Pro ou outra hospedagem que permita uso comercial.
+
 ## Decisões de arquitetura
 
 - O ambiente hospedado usa identidade integrada, D1 e R2 para funcionar sem dados locais.
