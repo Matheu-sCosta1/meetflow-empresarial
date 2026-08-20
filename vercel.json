@@ -9,6 +9,12 @@
       "memory": 1024
     }
   },
+  "crons": [
+    {
+      "path": "/api/cron/email-reminders",
+      "schedule": "0 9 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/:path*",

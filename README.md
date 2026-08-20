@@ -13,6 +13,7 @@ Plataforma empresarial para organizar reuniões, conversar com a equipe, adminis
 - configurações de perfil, empresa, senha, saída e exclusão de conta;
 - colaboradores com níveis `ADMIN` e `MEMBER`;
 - agenda compartilhada e prevenção de conflitos de horário;
+- confirmação, lembretes de 24 horas e 1 hora e aviso de cancelamento por e-mail para responsável e convidados;
 - canais de chat com histórico persistente, respostas, edição e exclusão controlada;
 - contadores de mensagens não lidas e central interna de notificações;
 - atualização em tempo real opcional com Ably e sincronização periódica automática como fallback;
@@ -122,6 +123,20 @@ ABLY_API_KEY=nome-da-chave:segredo
 
 A chave permanece no servidor. O navegador recebe um token temporário restrito aos canais da empresa autenticada. Sem essa variável, o MeetFlow continua funcional e atualiza as mensagens automaticamente a cada poucos segundos.
 
+Para habilitar os avisos de reunião por e-mail, use uma conta Brevo e verifique o endereço remetente. O plano gratuito atende até 300 envios por dia. Adicione somente nas variáveis protegidas da Vercel:
+
+```text
+BREVO_API_KEY=chave-exclusiva-do-servidor
+MEETFLOW_EMAIL_FROM=email-remetente-verificado
+MEETFLOW_EMAIL_NAME=MeetFlow
+CRON_SECRET=outra-chave-aleatoria-longa
+BREVO_SANDBOX=false
+```
+
+O responsável da reunião recebe os avisos automaticamente. Somente os colaboradores marcados e outros e-mails informados como convidados também recebem. A criação e o cancelamento da reunião continuam funcionando se o provedor de e-mail estiver temporariamente indisponível. A rotina diária da Vercel prepara o envio no horário exato usando o agendamento da Brevo.
+
+Durante a validação, mantenha `BREVO_SANDBOX=true`: a Brevo valida o pedido sem entregar mensagens reais. A chave nunca deve usar o prefixo `NEXT_PUBLIC_` nem ser salva no repositório.
+
 ### Publicação
 
 1. importe o repositório na Vercel;
@@ -140,7 +155,7 @@ GET https://seu-dominio.vercel.app/api/health
 Resposta esperada:
 
 ```json
-{"status":"ok","database":"connected","authentication":"configured","realtime":"configured"}
+{"status":"ok","database":"connected","authentication":"configured","realtime":"configured","email":"configured"}
 ```
 
 ## Rotas hospedadas
@@ -156,6 +171,7 @@ Resposta esperada:
 | `DELETE /api/account` | Desativar a própria conta |
 | `GET/POST /api/meetings` | Listar e criar reuniões |
 | `PATCH /api/meetings/{id}/cancel` | Cancelar reunião |
+| `GET /api/cron/email-reminders` | Preparar lembretes futuros (protegido por `CRON_SECRET`) |
 | `GET/POST /api/chat/channels` | Listar e criar canais |
 | `GET/POST /api/chat/channels/{id}/messages` | Histórico e envio de mensagens |
 | `PATCH/DELETE /api/chat/channels/{id}/messages/{messageId}` | Editar ou excluir mensagem |

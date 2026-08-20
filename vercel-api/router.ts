@@ -1,9 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ApiRequest, ApiResponse, UploadedFile } from "./http.js";
 import { assertAuthConfigured, authenticated, authenticationKey, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth.js";
 import { ensureSchema, query, transaction, type DbStatement } from "./db.js";
 import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, required } from "./http.js";
 import { chatChannel, notificationChannel, publishRealtime, realtimeConfigured, realtimeToken } from "./realtime.js";
+import { emailConfigured, type MeetingEmailRecipient } from "./email.js";
+import { cancelMeetingEmailJobs, meetingEmailJobStatements, processPendingMeetingEmailJobs } from "./meeting-emails.js";
 
 type UnknownBody = Record<string, unknown>;
 type QueryRow = Record<string, unknown>;
@@ -43,6 +45,16 @@ function dateValue(value: unknown, label: string) {
 
 function requireAdmin(role: string) {
   if (role !== "ADMIN") throw new HttpError(403, "Apenas administradores podem realizar esta ação");
+}
+
+function cronAuthorized(request: ApiRequest) {
+  const secret = process.env.CRON_SECRET?.trim();
+  if (!secret) throw new HttpError(503, "Rotina de lembretes não configurada");
+  const headerValue = request.headers.authorization;
+  const authorization = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  const expected = Buffer.from(`Bearer ${secret}`);
+  const received = Buffer.from(authorization ?? "");
+  return expected.length === received.length && timingSafeEqual(expected, received);
 }
 
 function validateStrongPassword(password: string, label = "A senha") {
@@ -236,32 +248,54 @@ async function createMeeting(request: ApiRequest, response: ApiResponse, user: N
   const ownerId = required(body.ownerId, "Responsável", 100);
   const startAt = dateValue(body.startAt, "Início");
   const endAt = dateValue(body.endAt, "Término");
+  if (startAt <= new Date()) throw new HttpError(400, "O início da reunião deve estar no futuro");
   if (endAt <= startAt) throw new HttpError(400, "O término deve ser posterior ao início");
   const mode = required(body.mode, "Formato", 30);
   if (!new Set(["VIDEO", "IN_PERSON"]).has(mode)) throw new HttpError(400, "Formato de reunião inválido");
   const location = optional(body.location, 300);
   const notes = optional(body.notes, 2000);
-  const owners = await query<QueryRow>(`SELECT id FROM users WHERE id = $1 AND organization_id = $2 AND active = TRUE`, [ownerId, user.organizationId]);
+  const owners = await query<QueryRow>(`SELECT id, name, email FROM users WHERE id = $1 AND organization_id = $2 AND active = TRUE`, [ownerId, user.organizationId]);
   if (!owners[0]) throw new HttpError(404, "Responsável não encontrado na empresa");
   const conflicts = await query<QueryRow>(`SELECT id FROM meetings WHERE owner_id = $1 AND status <> 'CANCELLED'
     AND start_at < $2 AND end_at > $3 LIMIT 1`, [ownerId, endAt.toISOString(), startAt.toISOString()]);
   if (conflicts[0]) throw new HttpError(409, "O responsável já possui uma reunião neste horário");
 
   const guests = Array.isArray(body.guests) ? body.guests.slice(0, 50) : [];
-  const now = new Date().toISOString();
-  const id = randomUUID();
-  const statements: DbStatement[] = [{ text: `INSERT INTO meetings(id, organization_id, owner_id, created_by_id, title, start_at, end_at,
-    status, mode, location, notes, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'CONFIRMED',$8,$9,$10,$11,$11)`,
-    params: [id, user.organizationId, ownerId, user.id, title, startAt, endAt, mode, location, notes, now] }];
+  const recipients = new Map<string, MeetingEmailRecipient>();
+  const ownerEmail = String(owners[0].email).toLowerCase();
+  recipients.set(ownerEmail, { name: String(owners[0].name), email: ownerEmail });
+  const parsedGuests: MeetingEmailRecipient[] = [];
   for (const guestValue of guests) {
     const guest = guestValue && typeof guestValue === "object" ? guestValue as UnknownBody : {};
     const email = required(guest.email, "E-mail do convidado", 180).toLowerCase();
     if (!isEmail(email)) throw new HttpError(400, `E-mail de convidado inválido: ${email}`);
     const guestName = optional(guest.name, 120) ?? email.split("@")[0];
-    statements.push({ text: `INSERT INTO meeting_participants(id, meeting_id, name, email, response_status, created_at, updated_at)
-      VALUES ($1,$2,$3,$4,'PENDING',$5,$5)`, params: [randomUUID(), id, guestName, email, now] });
+    if (!recipients.has(email)) {
+      parsedGuests.push({ name: guestName, email });
+      recipients.set(email, { name: guestName, email });
+    }
   }
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const id = randomUUID();
+  const statements: DbStatement[] = [{ text: `INSERT INTO meetings(id, organization_id, owner_id, created_by_id, title, start_at, end_at,
+    status, mode, location, notes, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'CONFIRMED',$8,$9,$10,$11,$11)`,
+    params: [id, user.organizationId, ownerId, user.id, title, startAt, endAt, mode, location, notes, now] }];
+  for (const guest of parsedGuests) {
+    statements.push({ text: `INSERT INTO meeting_participants(id, meeting_id, name, email, response_status, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,'PENDING',$5,$5)`, params: [randomUUID(), id, guest.name, guest.email, now] });
+  }
+  statements.push(...meetingEmailJobStatements({
+    meetingId: id,
+    organizationId: user.organizationId,
+    recipients: [...recipients.values()],
+    startAt,
+    now: nowDate,
+  }));
   await transaction(statements);
+  await processPendingMeetingEmailJobs({ meetingId: id, limit: 100 }).catch((error: unknown) => {
+    console.error("MeetFlow meeting email processing failed", error instanceof Error ? error.message : "unknown error");
+  });
   json(response, 201, meetingView((await meetingRows(user.organizationId, id))[0]));
 }
 
@@ -271,6 +305,9 @@ async function cancelMeeting(request: ApiRequest, response: ApiResponse, organiz
   const rows = await query<QueryRow>(`UPDATE meetings SET status = 'CANCELLED', cancellation_reason = $1, updated_at = $2
     WHERE id = $3 AND organization_id = $4 RETURNING id`, [reason, new Date().toISOString(), id, organizationId]);
   if (!rows[0]) throw new HttpError(404, "Reunião não encontrada");
+  await cancelMeetingEmailJobs(id).catch((error: unknown) => {
+    console.error("MeetFlow cancellation email processing failed", error instanceof Error ? error.message : "unknown error");
+  });
   json(response, 200, meetingView((await meetingRows(organizationId, id))[0]));
 }
 
@@ -560,7 +597,11 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (method === "OPTIONS") return empty(response);
     if (method === "GET" && samePath(path, "health")) {
       assertAuthConfigured();
-      return json(response, 200, { status: "ok", database: "connected", authentication: "configured", realtime: realtimeConfigured() ? "configured" : "fallback" });
+      return json(response, 200, { status: "ok", database: "connected", authentication: "configured", realtime: realtimeConfigured() ? "configured" : "fallback", email: emailConfigured() ? "configured" : "pending" });
+    }
+    if (method === "GET" && samePath(path, "cron", "email-reminders")) {
+      if (!cronAuthorized(request)) throw new HttpError(401, "Rotina de lembretes não autorizada");
+      return json(response, 200, await processPendingMeetingEmailJobs({ limit: 60 }));
     }
     if (method === "POST" && samePath(path, "auth", "register")) return await register(request, response);
     if (method === "POST" && samePath(path, "auth", "login")) return await login(request, response);

@@ -540,9 +540,33 @@ function ProfileSettings({ user, api, onUser, onLogout, onDelete, onError }: { u
 
 function MeetingModal({ members, onClose, onSave, onError }: { members: TeamMember[]; onClose: () => void; onSave: (input: Record<string, unknown>) => Promise<void>; onError: (reason: unknown) => void }) {
   const [busy, setBusy] = useState(false);
+  const [ownerId, setOwnerId] = useState(members[0]?.id ?? "");
+  const [invitedMemberIds, setInvitedMemberIds] = useState<Set<string>>(() => new Set());
   const start = localDateTime(1), end = localDateTime(2);
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy(true); const form = new FormData(event.currentTarget); const emails = String(form.get("guests") || "").split(",").map((email) => email.trim()).filter(Boolean); try { await onSave({ title: String(form.get("title")), ownerId: String(form.get("ownerId")), startAt: new Date(String(form.get("startAt"))).toISOString(), endAt: new Date(String(form.get("endAt"))).toISOString(), mode: String(form.get("mode")), location: String(form.get("location")), notes: String(form.get("notes")), guests: emails.map((email) => ({ name: email.split("@")[0], email })) }); } catch (reason) { onError(reason); } finally { setBusy(false); } }
-  return <div className="modal-backdrop"><section className="modal"><header><div><span className="section-kicker">AGENDA EMPRESARIAL</span><h2>Nova reunião</h2></div><button onClick={onClose}><X /></button></header><form onSubmit={submit}><label>Título<input name="title" required maxLength={160} placeholder="Alinhamento semanal" /></label><label>Responsável<select name="ownerId" required>{members.map((member) => <option value={member.id} key={member.id}>{member.name} — {member.jobTitle}</option>)}</select></label><div className="form-row two"><label>Início<input name="startAt" type="datetime-local" required defaultValue={start} /></label><label>Término<input name="endAt" type="datetime-local" required defaultValue={end} /></label></div><div className="form-row two"><label>Formato<select name="mode"><option value="VIDEO">Videoconferência</option><option value="IN_PERSON">Presencial</option></select></label><label>Local ou link<input name="location" maxLength={300} placeholder="Sala 2 ou link" /></label></div><label>Convidados por e-mail<input name="guests" placeholder="ana@empresa.com, joao@cliente.com" /></label><label>Observações<textarea name="notes" rows={3} maxLength={2000} placeholder="Pauta e informações importantes" /></label><div className="modal-note"><ShieldCheck /> O sistema impede dois compromissos no mesmo horário para o responsável.</div><footer><button type="button" className="button button-soft" onClick={onClose}>Cancelar</button><button className="button button-primary" disabled={busy}>{busy && <Loader2 className="spin" />}Criar reunião</button></footer></form></section></div>;
+  function toggleMember(id: string) {
+    setInvitedMemberIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    const form = new FormData(event.currentTarget);
+    const recipients = new Map<string, { name: string; email: string }>();
+    for (const member of members.filter((item) => invitedMemberIds.has(item.id))) {
+      recipients.set(member.email.toLowerCase(), { name: member.name, email: member.email });
+    }
+    for (const email of String(form.get("guests") || "").split(",").map((value) => value.trim()).filter(Boolean)) {
+      const normalized = email.toLowerCase();
+      if (!recipients.has(normalized)) recipients.set(normalized, { name: email.split("@")[0], email });
+    }
+    try {
+      await onSave({ title: String(form.get("title")), ownerId, startAt: new Date(String(form.get("startAt"))).toISOString(), endAt: new Date(String(form.get("endAt"))).toISOString(), mode: String(form.get("mode")), location: String(form.get("location")), notes: String(form.get("notes")), guests: [...recipients.values()] });
+    } catch (reason) { onError(reason); } finally { setBusy(false); }
+  }
+  return <div className="modal-backdrop"><section className="modal"><header><div><span className="section-kicker">AGENDA EMPRESARIAL</span><h2>Nova reunião</h2></div><button onClick={onClose}><X /></button></header><form onSubmit={submit}><label>Título<input name="title" required maxLength={160} placeholder="Alinhamento semanal" /></label><label>Responsável<select name="ownerId" required value={ownerId} onChange={(event) => setOwnerId(event.target.value)}>{members.map((member) => <option value={member.id} key={member.id}>{member.name} — {member.jobTitle}</option>)}</select></label><div className="form-row two"><label>Início<input name="startAt" type="datetime-local" required defaultValue={start} /></label><label>Término<input name="endAt" type="datetime-local" required defaultValue={end} /></label></div><div className="form-row two"><label>Formato<select name="mode"><option value="VIDEO">Videoconferência</option><option value="IN_PERSON">Presencial</option></select></label><label>Local ou link<input name="location" maxLength={300} placeholder="Sala 2 ou link" /></label></div><div className="meeting-email-panel"><div className="meeting-email-head"><Mail /><div><strong>Quem receberá os avisos?</strong><span>O responsável e os colaboradores marcados receberão confirmação e lembretes por e-mail.</span></div></div><div className="meeting-invite-list">{members.map((member) => { const responsible = member.id === ownerId; const checked = responsible || invitedMemberIds.has(member.id); return <label className={checked ? "selected" : ""} key={member.id}><input type="checkbox" checked={checked} disabled={responsible} onChange={() => toggleMember(member.id)} /><span className="avatar avatar-fallback">{initials(member.name)}</span><span><strong>{member.name}</strong><small>{responsible ? "Responsável · aviso automático" : member.email}</small></span><Check /></label>; })}</div></div><label>Outros convidados por e-mail<input name="guests" type="text" inputMode="email" placeholder="ana@cliente.com, joao@parceiro.com" /><span className="field-help">Separe mais de um e-mail por vírgula.</span></label><label>Observações<textarea name="notes" rows={3} maxLength={2000} placeholder="Pauta e informações importantes" /></label><div className="modal-note"><ShieldCheck /> O sistema evita conflitos de horário e prepara lembretes de 24 horas e 1 hora.</div><footer><button type="button" className="button button-soft" onClick={onClose}>Cancelar</button><button className="button button-primary" disabled={busy || !ownerId}>{busy && <Loader2 className="spin" />}Criar reunião</button></footer></form></section></div>;
 }
 
 function SimpleModal({ title, kicker, children, submitLabel = "Salvar", onClose, onSubmit, onError }: { title: string; kicker: string; children: ReactNode; submitLabel?: string; onClose: () => void; onSubmit: (form: FormData) => Promise<void>; onError: (reason: unknown) => void }) {
