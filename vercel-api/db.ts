@@ -49,18 +49,30 @@ const schema = [
     job_title VARCHAR(120) NOT NULL DEFAULT 'Colaborador',
     avatar_url VARCHAR(500),
     terms_accepted_at TIMESTAMPTZ,
+    auth_version INTEGER NOT NULL DEFAULT 0,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
   )`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS job_title VARCHAR(120) NOT NULL DEFAULT 'Colaborador'`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0`,
   `CREATE TABLE IF NOT EXISTS auth_rate_limits (
     key_hash VARCHAR(64) PRIMARY KEY,
     failures INTEGER NOT NULL DEFAULT 0,
     blocked_until TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_password_reset_expiry ON password_reset_tokens(expires_at)`,
   `CREATE TABLE IF NOT EXISTS availabilities (
     id UUID PRIMARY KEY,
     owner_id UUID NOT NULL REFERENCES users(id),

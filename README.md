@@ -8,6 +8,7 @@ Plataforma empresarial para organizar reuniões, conversar com a equipe, adminis
 - confirmação e indicador de força da senha no cadastro;
 - login individual com senha protegida, sessão JWT e opção de manter conectado;
 - bloqueio temporário após tentativas repetidas de login;
+- recuperação de senha por link seguro, individual e válido por 60 minutos;
 - empresas isoladas por `organizationId`;
 - perfis profissionais com foto, nome e cargo;
 - configurações de perfil, empresa, senha, saída e exclusão de conta;
@@ -129,11 +130,14 @@ Para habilitar os avisos de reunião por e-mail, use uma conta Brevo e verifique
 BREVO_API_KEY=chave-exclusiva-do-servidor
 MEETFLOW_EMAIL_FROM=email-remetente-verificado
 MEETFLOW_EMAIL_NAME=MeetFlow
+MEETFLOW_PUBLIC_URL=https://seu-dominio.vercel.app
 CRON_SECRET=outra-chave-aleatoria-longa
 BREVO_SANDBOX=false
 ```
 
 O responsável da reunião recebe os avisos automaticamente. Somente os colaboradores marcados e outros e-mails informados como convidados também recebem. A criação e o cancelamento da reunião continuam funcionando se o provedor de e-mail estiver temporariamente indisponível. A rotina diária da Vercel prepara o envio no horário exato usando o agendamento da Brevo.
+
+A mesma configuração da Brevo envia a recuperação de senha. O link contém um token aleatório armazenado apenas como hash no banco, expira em 60 minutos, funciona uma única vez e invalida as sessões anteriores após a troca. `MEETFLOW_PUBLIC_URL` é opcional na Vercel, que detecta o domínio de produção automaticamente, mas pode ser definido quando houver um domínio próprio.
 
 Durante a validação, mantenha `BREVO_SANDBOX=true`: a Brevo valida o pedido sem entregar mensagens reais. A chave nunca deve usar o prefixo `NEXT_PUBLIC_` nem ser salva no repositório.
 
@@ -164,6 +168,8 @@ Resposta esperada:
 | --- | --- |
 | `POST /api/auth/register` | Criar empresa e administrador |
 | `POST /api/auth/login` | Entrar e receber JWT |
+| `POST /api/auth/forgot-password` | Solicitar link seguro de recuperação |
+| `POST /api/auth/reset-password` | Criar nova senha com token válido |
 | `GET /api/auth/me` | Consultar usuário atual |
 | `PATCH /api/account/profile` | Atualizar perfil e empresa |
 | `POST /api/account/avatar` | Atualizar foto do perfil |

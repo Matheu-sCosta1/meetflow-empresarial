@@ -104,22 +104,29 @@ export function emailConfigured() {
   return Boolean(process.env.BREVO_API_KEY?.trim() && process.env.MEETFLOW_EMAIL_FROM?.trim());
 }
 
-export async function sendMeetingEmail(input: {
+function passwordResetContent(input: { name: string; resetUrl: string; expiresMinutes: number }) {
+  const subject = "Redefina sua senha do MeetFlow";
+  const textContent = `Olá, ${input.name}.\n\nRecebemos uma solicitação para redefinir a senha da sua conta no MeetFlow.\n\nCrie uma nova senha usando este link (válido por ${input.expiresMinutes} minutos):\n${input.resetUrl}\n\nSe você não solicitou esta alteração, ignore este e-mail. Sua senha continuará a mesma.`;
+  const htmlContent = `<!doctype html><html lang="pt-BR"><body style="margin:0;background:#f3f6f3;font-family:Arial,sans-serif;color:#17251f"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:28px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 14px 40px rgba(22,45,35,.10)"><tr><td style="height:7px;background:#a8d94f"></td></tr><tr><td style="padding:34px"><div style="font-size:13px;font-weight:800;letter-spacing:.12em;color:#527147">RECUPERAÇÃO DE ACESSO</div><h1 style="margin:11px 0 9px;font-size:28px;line-height:1.2;color:#17382d">Crie uma nova senha</h1><p style="margin:0;color:#65736b;line-height:1.65">Olá, ${escapeHtml(input.name)}. Recebemos uma solicitação para redefinir a senha da sua conta no MeetFlow.</p><div style="margin:27px 0"><a href="${escapeHtml(input.resetUrl)}" style="display:inline-block;background:#17382d;color:#ffffff;text-decoration:none;font-weight:700;padding:14px 22px;border-radius:11px">Redefinir minha senha</a></div><div style="padding:14px 16px;background:#eff6e9;border:1px solid #dfead8;border-radius:11px;color:#58704d;font-size:14px;line-height:1.5">Este link é pessoal, funciona uma única vez e expira em <strong>${input.expiresMinutes} minutos</strong>.</div><p style="margin:24px 0 8px;color:#65736b;font-size:13px;line-height:1.55">Se você não solicitou esta alteração, ignore este e-mail. Sua senha continuará a mesma.</p><p style="margin:0;color:#89948d;font-size:11px;line-height:1.5;word-break:break-all">Se o botão não abrir, copie este endereço:<br>${escapeHtml(input.resetUrl)}</p></td></tr></table></td></tr></table></body></html>`;
+  return { subject, textContent, htmlContent };
+}
+
+async function sendTransactionalEmail(input: {
   recipient: MeetingEmailRecipient;
-  meeting: MeetingEmailData;
-  kind: MeetingEmailKind;
+  subject: string;
+  textContent: string;
+  htmlContent: string;
   scheduledAt?: string;
 }) {
   const apiKey = process.env.BREVO_API_KEY?.trim();
   const senderEmail = process.env.MEETFLOW_EMAIL_FROM?.trim();
   if (!apiKey || !senderEmail) throw new Error("Serviço de e-mail não configurado");
-  const content = renderEmail(input.recipient, input.meeting, input.kind);
   const payload: Record<string, unknown> = {
     sender: { name: process.env.MEETFLOW_EMAIL_NAME?.trim() || "MeetFlow", email: senderEmail },
     to: [{ name: input.recipient.name, email: input.recipient.email }],
-    subject: content.subject,
-    textContent: content.textContent,
-    htmlContent: content.htmlContent,
+    subject: input.subject,
+    textContent: input.textContent,
+    htmlContent: input.htmlContent,
   };
   if (input.scheduledAt) payload.scheduledAt = input.scheduledAt;
   if (process.env.BREVO_SANDBOX?.trim().toLowerCase() === "true") {
@@ -136,6 +143,26 @@ export async function sendMeetingEmail(input: {
     throw new Error(`Brevo recusou o envio (${response.status})${result.message ? `: ${result.message.slice(0, 180)}` : ""}`);
   }
   return result.messageId;
+}
+
+export async function sendPasswordResetEmail(input: {
+  recipient: MeetingEmailRecipient;
+  resetUrl: string;
+  expiresMinutes?: number;
+}) {
+  const expiresMinutes = input.expiresMinutes ?? 60;
+  const content = passwordResetContent({ name: input.recipient.name, resetUrl: input.resetUrl, expiresMinutes });
+  return await sendTransactionalEmail({ recipient: input.recipient, ...content });
+}
+
+export async function sendMeetingEmail(input: {
+  recipient: MeetingEmailRecipient;
+  meeting: MeetingEmailData;
+  kind: MeetingEmailKind;
+  scheduledAt?: string;
+}) {
+  const content = renderEmail(input.recipient, input.meeting, input.kind);
+  return await sendTransactionalEmail({ recipient: input.recipient, ...content, scheduledAt: input.scheduledAt });
 }
 
 export async function cancelScheduledMeetingEmail(messageId: string) {

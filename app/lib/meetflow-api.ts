@@ -88,6 +88,14 @@ export class MeetFlowApi {
     return this.request<AuthResponse>("/auth/login", { method: "POST", body: JSON.stringify({ email, password, remember }) });
   }
 
+  requestPasswordReset(email: string) {
+    return this.request<{ message: string }>("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) });
+  }
+
+  resetPassword(token: string, newPassword: string) {
+    return this.request<{ message: string }>("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, newPassword }) });
+  }
+
   me() { return this.request<AuthUser>("/auth/me"); }
 
   meetings(from: string, to: string) {

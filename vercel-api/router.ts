@@ -1,10 +1,10 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ApiRequest, ApiResponse, UploadedFile } from "./http.js";
 import { assertAuthConfigured, authenticated, authenticationKey, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth.js";
 import { ensureSchema, query, transaction, type DbStatement } from "./db.js";
 import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, required } from "./http.js";
 import { chatChannel, notificationChannel, publishRealtime, realtimeConfigured, realtimeToken } from "./realtime.js";
-import { emailConfigured, type MeetingEmailRecipient } from "./email.js";
+import { emailConfigured, sendPasswordResetEmail, type MeetingEmailRecipient } from "./email.js";
 import { cancelMeetingEmailJobs, meetingEmailJobStatements, processPendingMeetingEmailJobs } from "./meeting-emails.js";
 
 type UnknownBody = Record<string, unknown>;
@@ -12,6 +12,8 @@ type QueryRow = Record<string, unknown>;
 
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const VIDEO_TYPES = new Set(["video/mp4", "video/quicktime", "video/webm"]);
+const PASSWORD_RESET_EXPIRES_MINUTES = 60;
+const PASSWORD_RESET_RESPONSE = "Se este e-mail estiver cadastrado, você receberá um link para criar uma nova senha.";
 
 function iso(value: unknown) {
   return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
@@ -61,6 +63,20 @@ function validateStrongPassword(password: string, label = "A senha") {
   if (password.length < 10 || !/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) {
     throw new HttpError(400, `${label} deve ter ao menos 10 caracteres, uma letra maiúscula e um número`);
   }
+}
+
+function passwordResetTokenHash(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function passwordResetUrl(token: string) {
+  const configured = process.env.MEETFLOW_PUBLIC_URL?.trim();
+  const vercelHost = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim() || process.env.VERCEL_URL?.trim();
+  const base = configured || (vercelHost ? (/^https?:\/\//i.test(vercelHost) ? vercelHost : `https://${vercelHost}`) : "");
+  if (!base) throw new Error("Endereço público do MeetFlow não configurado");
+  const url = new URL("/", base);
+  url.hash = new URLSearchParams({ reset_token: token }).toString();
+  return url.toString();
 }
 
 async function enforceLoginRateLimit(key: string) {
@@ -196,7 +212,7 @@ async function register(request: ApiRequest, response: ApiResponse) {
     statements.push({ text: `INSERT INTO availabilities(id, owner_id, day_of_week, start_time, end_time, timezone, active, created_at, updated_at)
       VALUES ($1,$2,$3,'09:00','18:00','America/Sao_Paulo',TRUE,$4,$4)`, params: [randomUUID(), userId, day, now] });
   }
-  const user = { id: userId, organizationId, name, email, role: "ADMIN" as const, jobTitle, avatarUrl: null, organizationName, organizationSlug };
+  const user = { id: userId, organizationId, name, email, role: "ADMIN" as const, jobTitle, avatarUrl: null, organizationName, organizationSlug, authVersion: 0 };
   const token = signToken(user, true);
   await transaction(statements);
   json(response, 201, { token, user: userView(user) });
@@ -217,6 +233,64 @@ async function login(request: ApiRequest, response: ApiResponse) {
   await query(`DELETE FROM auth_rate_limits WHERE key_hash = $1`, [rateKey]);
   const user = mapUser(row);
   json(response, 200, { token: signToken(user, remember), user: userView(user) });
+}
+
+async function requestPasswordReset(request: ApiRequest, response: ApiResponse) {
+  const body = await jsonBody<UnknownBody>(request);
+  const email = required(body.email, "E-mail", 180).toLowerCase();
+  if (!isEmail(email)) throw new HttpError(400, "Informe um e-mail válido");
+
+  const rateKey = authenticationKey(`password-reset:${email}`, request.headers);
+  const recent = await query<QueryRow>(`SELECT updated_at FROM auth_rate_limits WHERE key_hash = $1`, [rateKey]);
+  const lastRequestAt = recent[0]?.updated_at ? new Date(String(recent[0].updated_at)).getTime() : 0;
+  const rateLimited = Number.isFinite(lastRequestAt) && Date.now() - lastRequestAt < 60_000;
+  await query(`INSERT INTO auth_rate_limits(key_hash, failures, blocked_until, updated_at)
+    VALUES ($1, 0, NULL, NOW()) ON CONFLICT (key_hash) DO UPDATE SET failures = 0, blocked_until = NULL, updated_at = NOW()`, [rateKey]);
+  if (rateLimited) return json(response, 202, { message: PASSWORD_RESET_RESPONSE });
+
+  const user = await userByEmail(email);
+  if (user?.active) {
+    const rawToken = randomBytes(32).toString("base64url");
+    const tokenHash = passwordResetTokenHash(rawToken);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + PASSWORD_RESET_EXPIRES_MINUTES * 60_000);
+    await transaction([
+      { text: `UPDATE password_reset_tokens SET used_at = $1 WHERE user_id = $2 AND used_at IS NULL`, params: [now, user.id] },
+      { text: `DELETE FROM password_reset_tokens WHERE expires_at < NOW() - INTERVAL '1 day'` },
+      { text: `INSERT INTO password_reset_tokens(id, user_id, token_hash, expires_at, used_at, created_at)
+        VALUES ($1,$2,$3,$4,NULL,$5)`, params: [randomUUID(), user.id, tokenHash, expiresAt, now] },
+    ]);
+    try {
+      await sendPasswordResetEmail({
+        recipient: { name: user.name, email: user.email },
+        resetUrl: passwordResetUrl(rawToken),
+        expiresMinutes: PASSWORD_RESET_EXPIRES_MINUTES,
+      });
+    } catch (error) {
+      await query(`UPDATE password_reset_tokens SET used_at = NOW() WHERE token_hash = $1`, [tokenHash]).catch(() => undefined);
+      console.error("MeetFlow password reset email error", error);
+    }
+  }
+  json(response, 202, { message: PASSWORD_RESET_RESPONSE });
+}
+
+async function resetPassword(request: ApiRequest, response: ApiResponse) {
+  const body = await jsonBody<UnknownBody>(request);
+  const token = required(body.token, "Link de recuperação", 200);
+  const newPassword = required(body.newPassword, "Nova senha", 200);
+  validateStrongPassword(newPassword, "A nova senha");
+  const now = new Date();
+  const rows = await query<QueryRow>(`WITH consumed AS (
+      UPDATE password_reset_tokens SET used_at = $3
+      WHERE token_hash = $1 AND used_at IS NULL AND expires_at > $3
+      RETURNING user_id
+    )
+    UPDATE users u SET password_hash = $2, auth_version = u.auth_version + 1, updated_at = $3
+    FROM consumed c WHERE u.id = c.user_id AND u.active = TRUE
+    RETURNING u.id`, [passwordResetTokenHash(token), await hashPassword(newPassword), now]);
+  if (!rows[0]) throw new HttpError(400, "Este link de recuperação expirou ou já foi utilizado");
+  await query(`DELETE FROM password_reset_tokens WHERE user_id = $1`, [String(rows[0].id)]);
+  json(response, 200, { message: "Senha redefinida. Você já pode entrar no MeetFlow." });
 }
 
 async function publicMedia(response: ApiResponse, id: string) {
@@ -533,7 +607,7 @@ async function removeTeamMember(response: ApiResponse, id: string, user: NonNull
 }
 
 async function updatedUser(userId: string) {
-  const rows = await query<QueryRow>(`SELECT u.id, u.organization_id, u.name, u.email, u.role, u.job_title, u.avatar_url,
+  const rows = await query<QueryRow>(`SELECT u.id, u.organization_id, u.name, u.email, u.role, u.job_title, u.avatar_url, u.auth_version,
     o.name AS organization_name, o.slug AS organization_slug FROM users u JOIN organizations o ON o.id = u.organization_id WHERE u.id = $1`, [userId]);
   return mapUser(rows[0] as Parameters<typeof mapUser>[0]);
 }
@@ -605,6 +679,8 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     }
     if (method === "POST" && samePath(path, "auth", "register")) return await register(request, response);
     if (method === "POST" && samePath(path, "auth", "login")) return await login(request, response);
+    if (method === "POST" && samePath(path, "auth", "forgot-password")) return await requestPasswordReset(request, response);
+    if (method === "POST" && samePath(path, "auth", "reset-password")) return await resetPassword(request, response);
     if (method === "GET" && samePath(path, "public", "media", "*")) return await publicMedia(response, path[2]);
 
     const user = await authenticated(request.headers);

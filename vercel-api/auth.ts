@@ -12,6 +12,7 @@ export type AuthenticatedUser = {
   avatarUrl: string | null;
   organizationName: string;
   organizationSlug: string;
+  authVersion: number;
 };
 
 type UserRow = {
@@ -24,6 +25,7 @@ type UserRow = {
   avatar_url: string | null;
   organization_name: string;
   organization_slug: string;
+  auth_version: number;
 };
 
 function secret() {
@@ -40,10 +42,10 @@ function encode(value: string | Buffer) {
   return Buffer.from(value).toString("base64url");
 }
 
-export function signToken(user: { id: string; email: string }, remember = false) {
+export function signToken(user: { id: string; email: string; authVersion?: number }, remember = false) {
   const header = encode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const lifetime = remember ? 2_592_000 : 43_200;
-  const payload = encode(JSON.stringify({ sub: user.id, email: user.email, exp: Math.floor(Date.now() / 1000) + lifetime }));
+  const payload = encode(JSON.stringify({ sub: user.id, email: user.email, av: user.authVersion ?? 0, exp: Math.floor(Date.now() / 1000) + lifetime }));
   const content = `${header}.${payload}`;
   const signature = createHmac("sha256", secret()).update(content).digest("base64url");
   return `${content}.${signature}`;
@@ -63,8 +65,10 @@ function tokenSubject(token: string) {
   const actual = Buffer.from(parts[2], "base64url");
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
   try {
-    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { sub?: string; exp?: number };
-    return payload.sub && payload.exp && payload.exp > Date.now() / 1000 ? payload.sub : null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { sub?: string; exp?: number; av?: number };
+    return payload.sub && payload.exp && payload.exp > Date.now() / 1000
+      ? { userId: payload.sub, authVersion: Number.isInteger(payload.av) ? Number(payload.av) : 0 }
+      : null;
   } catch {
     return null;
   }
@@ -73,13 +77,13 @@ function tokenSubject(token: string) {
 export async function authenticated(headers: IncomingHttpHeaders) {
   const authorization = Array.isArray(headers.authorization) ? headers.authorization[0] : headers.authorization;
   if (!authorization?.startsWith("Bearer ")) return null;
-  const userId = tokenSubject(authorization.slice(7));
-  if (!userId) return null;
+  const subject = tokenSubject(authorization.slice(7));
+  if (!subject) return null;
   const rows = await query<UserRow>(`SELECT u.id, u.organization_id, u.name, u.email, u.role, u.job_title,
-    u.avatar_url, o.name AS organization_name, o.slug AS organization_slug
+    u.avatar_url, u.auth_version, o.name AS organization_name, o.slug AS organization_slug
     FROM users u JOIN organizations o ON o.id = u.organization_id
-    WHERE u.id = $1 AND u.active = TRUE`, [userId]);
-  return rows[0] ? mapUser(rows[0]) : null;
+    WHERE u.id = $1 AND u.active = TRUE`, [subject.userId]);
+  return rows[0] && Number(rows[0].auth_version) === subject.authVersion ? mapUser(rows[0]) : null;
 }
 
 export function mapUser(row: UserRow): AuthenticatedUser {
@@ -93,12 +97,13 @@ export function mapUser(row: UserRow): AuthenticatedUser {
     avatarUrl: row.avatar_url,
     organizationName: row.organization_name,
     organizationSlug: row.organization_slug,
+    authVersion: Number(row.auth_version ?? 0),
   };
 }
 
 export async function userByEmail(email: string) {
   const rows = await query<UserRow & { password_hash: string; active: boolean }>(`SELECT u.id, u.organization_id,
-    u.name, u.email, u.password_hash, u.role, u.job_title, u.avatar_url, u.active,
+    u.name, u.email, u.password_hash, u.role, u.job_title, u.avatar_url, u.active, u.auth_version,
     o.name AS organization_name, o.slug AS organization_slug
     FROM users u JOIN organizations o ON o.id = u.organization_id WHERE LOWER(u.email) = LOWER($1)`, [email]);
   return rows[0];

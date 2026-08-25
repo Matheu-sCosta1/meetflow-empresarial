@@ -135,6 +135,10 @@ export default function LocalApp() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
 
   useEffect(() => {
+    if (new URLSearchParams(window.location.hash.replace(/^#/, "")).has("reset_token")) {
+      queueMicrotask(() => setSession(null));
+      return;
+    }
     const local = window.localStorage.getItem(SESSION_KEY);
     const temporary = window.sessionStorage.getItem(SESSION_KEY);
     const raw = local ?? temporary;
@@ -175,6 +179,16 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
   const [confirmation, setConfirmation] = useState("");
   const [avatar, setAvatar] = useState<File>();
   const [dialog, setDialog] = useState<"terms" | "privacy" | "recovery" | null>(null);
+  const [resetToken, setResetToken] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.hash.replace(/^#/, "")).get("reset_token") ?? "";
+  });
+
+  useEffect(() => {
+    if (resetToken && window.location.hash) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    }
+  }, [resetToken]);
 
   const passwordChecks = [
     { label: "10 caracteres", valid: password.length >= 10 },
@@ -218,6 +232,7 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
         <footer><ShieldCheck /> Ambiente protegido e conectado ao PostgreSQL</footer>
       </aside>
       <section className="local-auth-card">
+        {resetToken ? <PasswordResetForm token={resetToken} onBack={() => { setResetToken(""); changeMode("login"); }} /> : <>
         <div className="auth-tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => changeMode("login")}>Entrar</button><button type="button" role="tab" aria-selected={mode === "register"} className={mode === "register" ? "active" : ""} onClick={() => changeMode("register")}>Criar empresa</button></div>
         <div className="auth-heading"><span className="auth-secure"><LockKeyhole /> ACESSO SEGURO</span><h2>{mode === "login" ? "Bem-vindo de volta" : "Crie seu workspace"}</h2><p>{mode === "login" ? "Use os dados cadastrados para acessar sua empresa." : "Configure sua conta de administrador em poucos passos."}</p></div>
         {error && <div className="form-error">{error}</div>}
@@ -229,11 +244,58 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
           {mode === "login" && <div className="login-options"><label className="auth-check"><input name="remember" type="checkbox" /><span>Manter conectado neste dispositivo</span></label><button type="button" onClick={() => setDialog("recovery")}>Esqueci minha senha</button></div>}
           <button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>{mode === "login" ? "Entrar no MeetFlow" : "Criar meu workspace"}<ArrowRight /></>}</button>
         </form>
+        </>}
         <small><ShieldCheck /> Seus dados são protegidos e não aparecem para outras empresas</small>
       </section>
-      {dialog && <div className="auth-dialog-backdrop" role="presentation" onMouseDown={() => setDialog(null)}><section className="auth-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><span><ShieldCheck /></span><button onClick={() => setDialog(null)} aria-label="Fechar"><X /></button></header>{dialog === "terms" && <><h3>Termos de Uso</h3><p>Ao criar um workspace, você declara que fornecerá informações verdadeiras, manterá suas credenciais protegidas e utilizará o MeetFlow de forma legal e responsável.</p><p>A empresa administradora é responsável pelas contas de colaboradores e pelos conteúdos publicados em seu ambiente.</p></>}{dialog === "privacy" && <><h3>Política de Privacidade</h3><p>Contas, reuniões, mensagens e mídias são armazenadas para operar o workspace. Cada registro é vinculado à empresa autenticada e não é exibido a outros workspaces.</p><p>Senhas são armazenadas com hash seguro e nunca ficam disponíveis em texto aberto.</p></>}{dialog === "recovery" && <><h3>Recuperação de acesso</h3><p>Enquanto o envio automático de e-mail não estiver configurado, solicite a um administrador da sua empresa a recuperação da conta.</p><p>Se você for o único administrador, use a alteração de senha enquanto ainda estiver conectado.</p></>}<button className="button button-dark button-wide" onClick={() => setDialog(null)}>Entendi</button></section></div>}
+      {dialog && <div className="auth-dialog-backdrop" role="presentation" onMouseDown={() => setDialog(null)}><section className="auth-dialog" role="dialog" aria-modal="true" aria-label={dialog === "recovery" ? "Recuperar senha" : undefined} onMouseDown={(event) => event.stopPropagation()}><header><span><ShieldCheck /></span><button onClick={() => setDialog(null)} aria-label="Fechar"><X /></button></header>{dialog === "recovery" ? <PasswordRecoveryRequest onClose={() => setDialog(null)} /> : <>{dialog === "terms" && <><h3>Termos de Uso</h3><p>Ao criar um workspace, você declara que fornecerá informações verdadeiras, manterá suas credenciais protegidas e utilizará o MeetFlow de forma legal e responsável.</p><p>A empresa administradora é responsável pelas contas de colaboradores e pelos conteúdos publicados em seu ambiente.</p></>}{dialog === "privacy" && <><h3>Política de Privacidade</h3><p>Contas, reuniões, mensagens e mídias são armazenadas para operar o workspace. Cada registro é vinculado à empresa autenticada e não é exibido a outros workspaces.</p><p>Senhas são armazenadas com hash seguro e nunca ficam disponíveis em texto aberto.</p></>}<button className="button button-dark button-wide" onClick={() => setDialog(null)}>Entendi</button></>}</section></div>}
     </main>
   );
+}
+
+function PasswordRecoveryRequest({ onClose }: { onClose: () => void }) {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true); setError("");
+    try { setMessage((await meetFlowApi.requestPasswordReset(email)).message); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível solicitar a recuperação"); }
+    finally { setBusy(false); }
+  }
+
+  if (message) return <div className="recovery-success"><span><Mail /></span><h3>Confira seu e-mail</h3><p>{message}</p><p>O link é válido por 60 minutos e funciona apenas uma vez. Verifique também as pastas Spam e Promoções.</p><button className="button button-dark button-wide" onClick={onClose}>Voltar ao login</button></div>;
+  return <><h3>Recuperar sua senha</h3><p>Informe o e-mail usado no MeetFlow. Se a conta existir, enviaremos um link seguro para você criar uma nova senha.</p>{error && <div className="form-error">{error}</div>}<form className="recovery-form" onSubmit={submit}><label>E-mail da conta<div className="input-with-icon"><Mail /><input type="email" inputMode="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="voce@empresa.com" /></div></label><button className="button button-dark button-wide" disabled={busy}>{busy ? <Loader2 className="spin" /> : <><Mail /> Enviar link de recuperação</>}</button></form><small className="recovery-security"><ShieldCheck /> Por segurança, não informamos se um e-mail está cadastrado.</small></>;
+}
+
+function PasswordResetForm({ token, onBack }: { token: string; onBack: () => void }) {
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const checks = [
+    { label: "10 caracteres", valid: password.length >= 10 },
+    { label: "letra maiúscula", valid: /[A-Z]/.test(password) },
+    { label: "número", valid: /\d/.test(password) },
+  ];
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    if (!checks.every((item) => item.valid)) { setError("Crie uma senha que atenda a todos os requisitos"); return; }
+    if (password !== confirmation) { setError("As senhas informadas não são iguais"); return; }
+    setBusy(true);
+    try { setMessage((await meetFlowApi.resetPassword(token, password)).message); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível redefinir a senha"); }
+    finally { setBusy(false); }
+  }
+
+  if (message) return <div className="reset-password-success"><span><CheckCircle2 /></span><div className="auth-heading"><span className="auth-secure"><ShieldCheck /> SENHA ATUALIZADA</span><h2>Tudo pronto!</h2><p>{message}</p></div><button className="button button-primary button-wide" onClick={onBack}>Entrar com a nova senha <ArrowRight /></button></div>;
+  return <div className="reset-password-card"><button className="auth-back" type="button" onClick={onBack}>Voltar ao login</button><div className="auth-heading"><span className="auth-secure"><LockKeyhole /> LINK SEGURO</span><h2>Crie uma nova senha</h2><p>Escolha uma senha forte e diferente da anterior.</p></div>{error && <div className="form-error">{error}</div>}<form className="auth-form" onSubmit={submit}><label>Nova senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Crie uma senha forte" /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff /> : <Eye />}</button></div></label><label>Confirmar nova senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repita a nova senha" /></div></label><div className="password-strength"><div><span style={{ width: `${checks.filter((item) => item.valid).length / checks.length * 100}%` }} /></div><small>{checks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>Salvar nova senha <ArrowRight /></>}</button></form></div>;
 }
 
 function LocalDashboard({ session, onSession }: { session: Session; onSession: (session: Session | null) => void }) {
