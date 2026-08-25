@@ -111,6 +111,20 @@ function passwordResetContent(input: { name: string; resetUrl: string; expiresMi
   return { subject, textContent, htmlContent };
 }
 
+function teamInvitationContent(input: {
+  name: string;
+  invitationUrl: string;
+  organizationName: string;
+  invitedByName: string;
+  roleLabel: string;
+  expiresDays: number;
+}) {
+  const subject = `${input.invitedByName} convidou você para o MeetFlow`;
+  const textContent = `Olá, ${input.name}.\n\n${input.invitedByName} convidou você para participar da empresa ${input.organizationName} no MeetFlow como ${input.roleLabel}.\n\nCrie sua senha e aceite o convite usando este link (válido por ${input.expiresDays} dias):\n${input.invitationUrl}\n\nSe você não reconhece este convite, ignore este e-mail.`;
+  const htmlContent = `<!doctype html><html lang="pt-BR"><body style="margin:0;background:#f3f6f3;font-family:Arial,sans-serif;color:#17251f"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:28px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 14px 40px rgba(22,45,35,.10)"><tr><td style="height:7px;background:#a8d94f"></td></tr><tr><td style="padding:34px"><div style="font-size:13px;font-weight:800;letter-spacing:.12em;color:#527147">CONVITE PARA A EQUIPE</div><h1 style="margin:11px 0 9px;font-size:28px;line-height:1.2;color:#17382d">Você foi convidado para o MeetFlow</h1><p style="margin:0;color:#65736b;line-height:1.65">Olá, ${escapeHtml(input.name)}. <strong>${escapeHtml(input.invitedByName)}</strong> convidou você para participar de <strong>${escapeHtml(input.organizationName)}</strong>.</p><div style="margin:22px 0;padding:15px 17px;background:#eff6e9;border:1px solid #dfead8;border-radius:11px"><span style="display:block;color:#728078;font-size:12px">Nível de acesso</span><strong style="display:block;margin-top:4px;color:#35533f">${escapeHtml(input.roleLabel)}</strong></div><div style="margin:27px 0"><a href="${escapeHtml(input.invitationUrl)}" style="display:inline-block;background:#17382d;color:#ffffff;text-decoration:none;font-weight:700;padding:14px 22px;border-radius:11px">Aceitar convite e criar senha</a></div><p style="margin:0;color:#65736b;font-size:13px;line-height:1.55">Este link é pessoal, funciona uma única vez e expira em <strong>${input.expiresDays} dias</strong>. Se você não reconhece o convite, basta ignorar esta mensagem.</p><p style="margin:22px 0 0;color:#89948d;font-size:11px;line-height:1.5;word-break:break-all">Se o botão não abrir, copie este endereço:<br>${escapeHtml(input.invitationUrl)}</p></td></tr></table></td></tr></table></body></html>`;
+  return { subject, textContent, htmlContent };
+}
+
 async function sendTransactionalEmail(input: {
   recipient: MeetingEmailRecipient;
   subject: string;
@@ -152,6 +166,26 @@ export async function sendPasswordResetEmail(input: {
 }) {
   const expiresMinutes = input.expiresMinutes ?? 60;
   const content = passwordResetContent({ name: input.recipient.name, resetUrl: input.resetUrl, expiresMinutes });
+  return await sendTransactionalEmail({ recipient: input.recipient, ...content });
+}
+
+export async function sendTeamInvitationEmail(input: {
+  recipient: MeetingEmailRecipient;
+  invitationUrl: string;
+  organizationName: string;
+  invitedByName: string;
+  roleLabel: string;
+  expiresDays?: number;
+}) {
+  const expiresDays = input.expiresDays ?? 7;
+  const content = teamInvitationContent({
+    name: input.recipient.name,
+    invitationUrl: input.invitationUrl,
+    organizationName: input.organizationName,
+    invitedByName: input.invitedByName,
+    roleLabel: input.roleLabel,
+    expiresDays,
+  });
   return await sendTransactionalEmail({ recipient: input.recipient, ...content });
 }
 

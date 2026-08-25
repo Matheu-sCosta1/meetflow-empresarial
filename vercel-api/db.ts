@@ -57,6 +57,22 @@ const schema = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS job_title VARCHAR(120) NOT NULL DEFAULT 'Colaborador'`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0`,
+  `UPDATE users candidate SET role = 'OWNER', updated_at = NOW()
+    WHERE candidate.id IN (
+      SELECT first_admin.id FROM users first_admin
+      WHERE first_admin.active = TRUE AND first_admin.role = 'ADMIN'
+        AND NOT EXISTS (
+          SELECT 1 FROM users current_owner
+          WHERE current_owner.organization_id = first_admin.organization_id
+            AND current_owner.role = 'OWNER' AND current_owner.active = TRUE
+        )
+        AND first_admin.id = (
+          SELECT selected.id FROM users selected
+          WHERE selected.organization_id = first_admin.organization_id
+            AND selected.active = TRUE AND selected.role = 'ADMIN'
+          ORDER BY selected.created_at, selected.id LIMIT 1
+        )
+    )`,
   `CREATE TABLE IF NOT EXISTS auth_rate_limits (
     key_hash VARCHAR(64) PRIMARY KEY,
     failures INTEGER NOT NULL DEFAULT 0,
@@ -73,6 +89,37 @@ const schema = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_password_reset_expiry ON password_reset_tokens(expires_at)`,
+  `CREATE TABLE IF NOT EXISTS team_invitations (
+    id UUID PRIMARY KEY,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    invited_by_id UUID NOT NULL REFERENCES users(id),
+    name VARCHAR(120) NOT NULL,
+    email VARCHAR(180) NOT NULL,
+    job_title VARCHAR(120) NOT NULL,
+    role VARCHAR(20) NOT NULL,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    accepted_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    email_status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    last_sent_at TIMESTAMPTZ,
+    last_error VARCHAR(500),
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_team_invitations_org ON team_invitations(organization_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_team_invitations_email ON team_invitations(LOWER(email), expires_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS audit_events (
+    id UUID PRIMARY KEY,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    actor_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    action VARCHAR(80) NOT NULL,
+    target_type VARCHAR(40) NOT NULL,
+    target_id UUID,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_events_org_created ON audit_events(organization_id, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS availabilities (
     id UUID PRIMARY KEY,
     owner_id UUID NOT NULL REFERENCES users(id),

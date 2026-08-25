@@ -1,10 +1,10 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ApiRequest, ApiResponse, UploadedFile } from "./http.js";
-import { assertAuthConfigured, authenticated, authenticationKey, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser } from "./auth.js";
+import { assertAuthConfigured, authenticated, authenticationKey, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser, type UserRole } from "./auth.js";
 import { ensureSchema, query, transaction, type DbStatement } from "./db.js";
 import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, required } from "./http.js";
 import { chatChannel, notificationChannel, publishRealtime, realtimeConfigured, realtimeToken } from "./realtime.js";
-import { emailConfigured, sendPasswordResetEmail, type MeetingEmailRecipient } from "./email.js";
+import { emailConfigured, sendPasswordResetEmail, sendTeamInvitationEmail, type MeetingEmailRecipient } from "./email.js";
 import { cancelMeetingEmailJobs, meetingEmailJobStatements, processPendingMeetingEmailJobs } from "./meeting-emails.js";
 
 type UnknownBody = Record<string, unknown>;
@@ -14,6 +14,8 @@ const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const VIDEO_TYPES = new Set(["video/mp4", "video/quicktime", "video/webm"]);
 const PASSWORD_RESET_EXPIRES_MINUTES = 60;
 const PASSWORD_RESET_RESPONSE = "Se este e-mail estiver cadastrado, você receberá um link para criar uma nova senha.";
+const TEAM_INVITATION_EXPIRES_DAYS = 7;
+const MANAGED_ROLES = new Set<UserRole>(["ADMIN", "MANAGER", "MEMBER"]);
 
 function iso(value: unknown) {
   return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
@@ -45,8 +47,25 @@ function dateValue(value: unknown, label: string) {
   return date;
 }
 
+function canManageTeam(role: string) {
+  return role === "OWNER" || role === "ADMIN";
+}
+
 function requireAdmin(role: string) {
-  if (role !== "ADMIN") throw new HttpError(403, "Apenas administradores podem realizar esta ação");
+  if (!canManageTeam(role)) throw new HttpError(403, "Apenas proprietários e administradores podem realizar esta ação");
+}
+
+function managedRole(value: unknown): Exclude<UserRole, "OWNER"> {
+  const role = String(value ?? "MEMBER").toUpperCase() as UserRole;
+  if (!MANAGED_ROLES.has(role)) throw new HttpError(400, "Nível de acesso inválido");
+  return role as Exclude<UserRole, "OWNER">;
+}
+
+function roleLabel(role: UserRole) {
+  if (role === "OWNER") return "Proprietário";
+  if (role === "ADMIN") return "Administrador";
+  if (role === "MANAGER") return "Gestor";
+  return "Colaborador";
 }
 
 function cronAuthorized(request: ApiRequest) {
@@ -65,18 +84,26 @@ function validateStrongPassword(password: string, label = "A senha") {
   }
 }
 
-function passwordResetTokenHash(token: string) {
+function secureTokenHash(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function passwordResetUrl(token: string) {
+function publicUrlWithHash(parameters: Record<string, string>) {
   const configured = process.env.MEETFLOW_PUBLIC_URL?.trim();
   const vercelHost = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim() || process.env.VERCEL_URL?.trim();
   const base = configured || (vercelHost ? (/^https?:\/\//i.test(vercelHost) ? vercelHost : `https://${vercelHost}`) : "");
   if (!base) throw new Error("Endereço público do MeetFlow não configurado");
   const url = new URL("/", base);
-  url.hash = new URLSearchParams({ reset_token: token }).toString();
+  url.hash = new URLSearchParams(parameters).toString();
   return url.toString();
+}
+
+function passwordResetUrl(token: string) {
+  return publicUrlWithHash({ reset_token: token });
+}
+
+function invitationUrl(token: string) {
+  return publicUrlWithHash({ invite_token: token });
 }
 
 async function enforceLoginRateLimit(key: string) {
@@ -165,9 +192,35 @@ function statusView(row: QueryRow) {
 }
 
 function memberView(row: QueryRow) {
+  const invitation = row.entry_type === "INVITATION";
+  const active = !invitation && Boolean(row.active);
   return {
     id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role),
-    jobTitle: String(row.job_title), avatarUrl: row.avatar_url ? String(row.avatar_url) : null, active: Boolean(row.active),
+    jobTitle: String(row.job_title), avatarUrl: row.avatar_url ? String(row.avatar_url) : null, active,
+    status: invitation ? (new Date(String(row.expires_at)) > new Date() ? "PENDING" : "EXPIRED") : (active ? "ACTIVE" : "INACTIVE"),
+    invitation,
+    expiresAt: row.expires_at ? iso(row.expires_at) : null,
+  };
+}
+
+function auditView(row: QueryRow) {
+  let metadata: Record<string, unknown> = {};
+  if (row.metadata && typeof row.metadata === "object") metadata = row.metadata as Record<string, unknown>;
+  else if (typeof row.metadata === "string") {
+    try { metadata = JSON.parse(row.metadata) as Record<string, unknown>; } catch { metadata = {}; }
+  }
+  return {
+    id: String(row.id), action: String(row.action), actorName: row.actor_name ? String(row.actor_name) : null,
+    targetType: String(row.target_type), targetId: row.target_id ? String(row.target_id) : null,
+    metadata, createdAt: iso(row.created_at),
+  };
+}
+
+function auditStatement(user: AuthenticatedUser, action: string, targetType: string, targetId: string | null, metadata: Record<string, unknown>): DbStatement {
+  return {
+    text: `INSERT INTO audit_events(id, organization_id, actor_user_id, action, target_type, target_id, metadata, created_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)`,
+    params: [randomUUID(), user.organizationId, user.id, action, targetType, targetId, JSON.stringify(metadata), new Date()],
   };
 }
 
@@ -204,7 +257,7 @@ async function register(request: ApiRequest, response: ApiResponse) {
   const statements: DbStatement[] = [
     { text: `INSERT INTO organizations(id, name, slug, created_at, updated_at) VALUES ($1,$2,$3,$4,$4)`, params: [organizationId, organizationName, organizationSlug, now] },
     { text: `INSERT INTO users(id, organization_id, name, email, password_hash, role, job_title, terms_accepted_at, active, created_at, updated_at)
-      VALUES ($1,$2,$3,$4,$5,'ADMIN',$6,$7,TRUE,$7,$7)`, params: [userId, organizationId, name, email, passwordHash, jobTitle, now] },
+      VALUES ($1,$2,$3,$4,$5,'OWNER',$6,$7,TRUE,$7,$7)`, params: [userId, organizationId, name, email, passwordHash, jobTitle, now] },
     { text: `INSERT INTO chat_channels(id, organization_id, created_by_id, name, type, created_at, updated_at)
       VALUES ($1,$2,$3,'Geral','GROUP',$4,$4)`, params: [randomUUID(), organizationId, userId, now] },
   ];
@@ -212,7 +265,7 @@ async function register(request: ApiRequest, response: ApiResponse) {
     statements.push({ text: `INSERT INTO availabilities(id, owner_id, day_of_week, start_time, end_time, timezone, active, created_at, updated_at)
       VALUES ($1,$2,$3,'09:00','18:00','America/Sao_Paulo',TRUE,$4,$4)`, params: [randomUUID(), userId, day, now] });
   }
-  const user = { id: userId, organizationId, name, email, role: "ADMIN" as const, jobTitle, avatarUrl: null, organizationName, organizationSlug, authVersion: 0 };
+  const user = { id: userId, organizationId, name, email, role: "OWNER" as const, jobTitle, avatarUrl: null, organizationName, organizationSlug, authVersion: 0 };
   const token = signToken(user, true);
   await transaction(statements);
   json(response, 201, { token, user: userView(user) });
@@ -251,7 +304,7 @@ async function requestPasswordReset(request: ApiRequest, response: ApiResponse) 
   const user = await userByEmail(email);
   if (user?.active) {
     const rawToken = randomBytes(32).toString("base64url");
-    const tokenHash = passwordResetTokenHash(rawToken);
+    const tokenHash = secureTokenHash(rawToken);
     const now = new Date();
     const expiresAt = new Date(now.getTime() + PASSWORD_RESET_EXPIRES_MINUTES * 60_000);
     await transaction([
@@ -287,10 +340,73 @@ async function resetPassword(request: ApiRequest, response: ApiResponse) {
     )
     UPDATE users u SET password_hash = $2, auth_version = u.auth_version + 1, updated_at = $3
     FROM consumed c WHERE u.id = c.user_id AND u.active = TRUE
-    RETURNING u.id`, [passwordResetTokenHash(token), await hashPassword(newPassword), now]);
+    RETURNING u.id`, [secureTokenHash(token), await hashPassword(newPassword), now]);
   if (!rows[0]) throw new HttpError(400, "Este link de recuperação expirou ou já foi utilizado");
   await query(`DELETE FROM password_reset_tokens WHERE user_id = $1`, [String(rows[0].id)]);
   json(response, 200, { message: "Senha redefinida. Você já pode entrar no MeetFlow." });
+}
+
+async function invitationDetails(token: string) {
+  const rows = await query<QueryRow>(`SELECT i.*, o.name AS organization_name, o.slug AS organization_slug,
+    inviter.name AS invited_by_name
+    FROM team_invitations i
+    JOIN organizations o ON o.id = i.organization_id
+    JOIN users inviter ON inviter.id = i.invited_by_id
+    WHERE i.token_hash = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()`,
+  [secureTokenHash(token)]);
+  return rows[0];
+}
+
+async function inspectInvitation(request: ApiRequest, response: ApiResponse) {
+  const body = await jsonBody<UnknownBody>(request);
+  const token = required(body.token, "Convite", 200);
+  const invite = await invitationDetails(token);
+  if (!invite) throw new HttpError(400, "Este convite expirou, foi cancelado ou já foi utilizado");
+  json(response, 200, {
+    email: String(invite.email), name: String(invite.name), jobTitle: String(invite.job_title),
+    role: String(invite.role), organizationName: String(invite.organization_name),
+    invitedByName: String(invite.invited_by_name), expiresAt: iso(invite.expires_at),
+  });
+}
+
+async function acceptInvitation(request: ApiRequest, response: ApiResponse) {
+  const body = await jsonBody<UnknownBody>(request);
+  const token = required(body.token, "Convite", 200);
+  const password = required(body.password, "Senha", 200);
+  validateStrongPassword(password);
+  if (body.acceptTerms !== true) throw new HttpError(400, "Aceite os Termos de Uso e a Política de Privacidade para continuar");
+  const invite = await invitationDetails(token);
+  if (!invite) throw new HttpError(400, "Este convite expirou, foi cancelado ou já foi utilizado");
+  const email = String(invite.email).toLowerCase();
+  if (await userByEmail(email)) throw new HttpError(409, "Já existe uma conta com este e-mail");
+
+  const now = new Date();
+  const userId = randomUUID();
+  const organizationId = String(invite.organization_id);
+  const role = managedRole(invite.role);
+  const statements: DbStatement[] = [
+    { text: `UPDATE team_invitations SET accepted_at = $1, updated_at = $1
+      WHERE id = $2 AND token_hash = $3 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > $1`,
+    params: [now, String(invite.id), secureTokenHash(token)] },
+    { text: `INSERT INTO users(id, organization_id, name, email, password_hash, role, job_title, terms_accepted_at, active, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,TRUE,$8,$8)`,
+    params: [userId, organizationId, String(invite.name), email, await hashPassword(password), role, String(invite.job_title), now] },
+  ];
+  for (let day = 1; day <= 5; day += 1) statements.push({ text: `INSERT INTO availabilities(id, owner_id, day_of_week, start_time, end_time, timezone, active, created_at, updated_at)
+    VALUES ($1,$2,$3,'09:00','18:00','America/Sao_Paulo',TRUE,$4,$4)`, params: [randomUUID(), userId, day, now] });
+  statements.push({
+    text: `INSERT INTO audit_events(id, organization_id, actor_user_id, action, target_type, target_id, metadata, created_at)
+      VALUES ($1,$2,$3,'TEAM_INVITATION_ACCEPTED','USER',$3,$4::jsonb,$5)`,
+    params: [randomUUID(), organizationId, userId, JSON.stringify({ email, role }), now],
+  });
+  await transaction(statements);
+
+  const user: AuthenticatedUser = {
+    id: userId, organizationId, name: String(invite.name), email, role,
+    jobTitle: String(invite.job_title), avatarUrl: null,
+    organizationName: String(invite.organization_name), organizationSlug: String(invite.organization_slug), authVersion: 0,
+  };
+  json(response, 201, { token: signToken(user, true), user: userView(user) });
 }
 
 async function publicMedia(response: ApiResponse, id: string) {
@@ -491,7 +607,7 @@ async function deleteMessage(response: ApiResponse, channelId: string, messageId
   await channelForUser(channelId, user.organizationId);
   const now = new Date();
   const rows = await query<QueryRow>(`UPDATE chat_messages SET content = 'Mensagem excluída', deleted_at = $1, updated_at = $1
-    WHERE id = $2 AND channel_id = $3 AND deleted_at IS NULL AND (sender_id = $4 OR $5 = 'ADMIN') RETURNING id`,
+    WHERE id = $2 AND channel_id = $3 AND deleted_at IS NULL AND (sender_id = $4 OR $5 IN ('OWNER','ADMIN')) RETURNING id`,
   [now, messageId, channelId, user.id, user.role]);
   if (!rows[0]) throw new HttpError(404, "Mensagem não encontrada ou sem permissão para excluir");
   const deleted = messageView((await messageRows(channelId, user.organizationId, messageId))[0]);
@@ -562,7 +678,7 @@ async function createStatus(request: ApiRequest, response: ApiResponse, user: No
 
 async function deleteStatus(response: ApiResponse, id: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
   const rows = await query<QueryRow>(`DELETE FROM team_statuses WHERE id = $1 AND organization_id = $2
-    AND (author_id = $3 OR $4 = 'ADMIN') RETURNING media_url`, [id, user.organizationId, user.id, user.role]);
+    AND (author_id = $3 OR $4 IN ('OWNER','ADMIN')) RETURNING media_url`, [id, user.organizationId, user.id, user.role]);
   if (!rows[0]) throw new HttpError(404, "Status não encontrado");
   const mediaUrl = rows[0].media_url ? String(rows[0].media_url) : "";
   const mediaId = mediaUrl.match(/^\/api\/public\/media\/([0-9a-f-]+)$/)?.[1];
@@ -571,39 +687,153 @@ async function deleteStatus(response: ApiResponse, id: string, user: NonNullable
 }
 
 async function listTeam(response: ApiResponse, organizationId: string) {
-  const rows = await query<QueryRow>(`SELECT id, name, email, role, job_title, avatar_url, active FROM users
-    WHERE organization_id = $1 ORDER BY active DESC, name`, [organizationId]);
+  const rows = await query<QueryRow>(`SELECT id, name, email, role, job_title, avatar_url, active,
+      'USER' AS entry_type, NULL::timestamptz AS expires_at
+    FROM users WHERE organization_id = $1
+    UNION ALL
+    SELECT id, name, email, role, job_title, NULL::varchar AS avatar_url, FALSE AS active,
+      'INVITATION' AS entry_type, expires_at
+    FROM team_invitations
+    WHERE organization_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL
+    ORDER BY active DESC, name`, [organizationId]);
   json(response, 200, rows.map(memberView));
 }
 
-async function addTeamMember(request: ApiRequest, response: ApiResponse, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
+async function addTeamMember(request: ApiRequest, response: ApiResponse, user: AuthenticatedUser) {
   requireAdmin(user.role);
   const body = await jsonBody<UnknownBody>(request);
   const name = required(body.name, "Nome", 120);
   const email = required(body.email, "E-mail", 180).toLowerCase();
-  const password = required(body.password, "Senha", 200);
   const jobTitle = required(body.jobTitle, "Cargo", 120);
-  const role = body.role === "ADMIN" ? "ADMIN" : "MEMBER";
+  const role = managedRole(body.role);
   if (!isEmail(email)) throw new HttpError(400, "Informe um e-mail válido");
-  validateStrongPassword(password);
+  if (user.role === "ADMIN" && role === "ADMIN") throw new HttpError(403, "Somente o proprietário pode convidar outro administrador");
   if (await userByEmail(email)) throw new HttpError(409, "Já existe uma conta com este e-mail");
+  const pending = await query<QueryRow>(`SELECT id FROM team_invitations WHERE organization_id = $1
+    AND LOWER(email) = LOWER($2) AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW() LIMIT 1`,
+  [user.organizationId, email]);
+  if (pending[0]) throw new HttpError(409, "Já existe um convite pendente para este e-mail");
+
   const id = randomUUID();
-  const now = new Date().toISOString();
-  const statements: DbStatement[] = [{ text: `INSERT INTO users(id, organization_id, name, email, password_hash, role, job_title, active, created_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE,$8,$8)`, params: [id, user.organizationId, name, email, await hashPassword(password), role, jobTitle, now] }];
-  for (let day = 1; day <= 5; day += 1) statements.push({ text: `INSERT INTO availabilities(id, owner_id, day_of_week, start_time, end_time, timezone, active, created_at, updated_at)
-    VALUES ($1,$2,$3,'09:00','18:00','America/Sao_Paulo',TRUE,$4,$4)`, params: [randomUUID(), id, day, now] });
-  await transaction(statements);
-  json(response, 201, memberView({ id, name, email, role, job_title: jobTitle, avatar_url: null, active: true }));
+  const rawToken = randomBytes(32).toString("base64url");
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + TEAM_INVITATION_EXPIRES_DAYS * 86_400_000);
+  await transaction([
+    { text: `UPDATE team_invitations SET revoked_at = $1, updated_at = $1 WHERE organization_id = $2
+        AND LOWER(email) = LOWER($3) AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at <= $1`,
+    params: [now, user.organizationId, email] },
+    { text: `INSERT INTO team_invitations(id, organization_id, invited_by_id, name, email, job_title, role,
+        token_hash, expires_at, accepted_at, revoked_at, email_status, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,NULL,'PENDING',$10,$10)`,
+    params: [id, user.organizationId, user.id, name, email, jobTitle, role, secureTokenHash(rawToken), expiresAt, now] },
+    auditStatement(user, "TEAM_INVITATION_CREATED", "INVITATION", id, { name, email, jobTitle, role }),
+  ]);
+  try {
+    await sendTeamInvitationEmail({
+      recipient: { name, email }, invitationUrl: invitationUrl(rawToken), organizationName: user.organizationName,
+      invitedByName: user.name, roleLabel: roleLabel(role), expiresDays: TEAM_INVITATION_EXPIRES_DAYS,
+    });
+    await query(`UPDATE team_invitations SET email_status = 'SENT', last_sent_at = NOW(), last_error = NULL, updated_at = NOW() WHERE id = $1`, [id]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 500) : "Falha no envio";
+    await transaction([
+      { text: `UPDATE team_invitations SET email_status = 'FAILED', last_error = $1, revoked_at = NOW(), updated_at = NOW() WHERE id = $2`, params: [message, id] },
+      auditStatement(user, "TEAM_INVITATION_EMAIL_FAILED", "INVITATION", id, { email }),
+    ]);
+    throw new HttpError(502, "Não foi possível enviar o convite agora. Tente novamente em instantes");
+  }
+  json(response, 201, memberView({ id, name, email, role, job_title: jobTitle, avatar_url: null, active: false, entry_type: "INVITATION", expires_at: expiresAt }));
 }
 
-async function removeTeamMember(response: ApiResponse, id: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
+async function resendTeamInvitation(response: ApiResponse, id: string, user: AuthenticatedUser) {
+  requireAdmin(user.role);
+  const rows = await query<QueryRow>(`SELECT i.*, o.name AS organization_name FROM team_invitations i
+    JOIN organizations o ON o.id = i.organization_id
+    WHERE i.id = $1 AND i.organization_id = $2 AND i.accepted_at IS NULL AND i.revoked_at IS NULL`, [id, user.organizationId]);
+  const invite = rows[0];
+  if (!invite) throw new HttpError(404, "Convite pendente não encontrado");
+  const role = managedRole(invite.role);
+  if (user.role === "ADMIN" && role === "ADMIN") throw new HttpError(403, "Somente o proprietário pode reenviar este convite");
+  const rawToken = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + TEAM_INVITATION_EXPIRES_DAYS * 86_400_000);
+  await transaction([
+    { text: `UPDATE team_invitations SET token_hash = $1, expires_at = $2, email_status = 'PENDING',
+        last_error = NULL, updated_at = NOW() WHERE id = $3`, params: [secureTokenHash(rawToken), expiresAt, id] },
+    auditStatement(user, "TEAM_INVITATION_RESENT", "INVITATION", id, { email: String(invite.email), role }),
+  ]);
+  try {
+    await sendTeamInvitationEmail({
+      recipient: { name: String(invite.name), email: String(invite.email) }, invitationUrl: invitationUrl(rawToken),
+      organizationName: String(invite.organization_name), invitedByName: user.name,
+      roleLabel: roleLabel(role), expiresDays: TEAM_INVITATION_EXPIRES_DAYS,
+    });
+    await query(`UPDATE team_invitations SET email_status = 'SENT', last_sent_at = NOW(), updated_at = NOW() WHERE id = $1`, [id]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 500) : "Falha no envio";
+    await query(`UPDATE team_invitations SET email_status = 'FAILED', last_error = $1, updated_at = NOW() WHERE id = $2`, [message, id]);
+    throw new HttpError(502, "O convite continua pendente, mas o e-mail não pôde ser reenviado agora");
+  }
+  json(response, 200, memberView({ ...invite, entry_type: "INVITATION", active: false, expires_at: expiresAt }));
+}
+
+async function revokeTeamInvitation(response: ApiResponse, id: string, user: AuthenticatedUser) {
+  requireAdmin(user.role);
+  const rows = await query<QueryRow>(`SELECT id, email, role FROM team_invitations WHERE id = $1 AND organization_id = $2
+    AND accepted_at IS NULL AND revoked_at IS NULL`, [id, user.organizationId]);
+  if (!rows[0]) throw new HttpError(404, "Convite pendente não encontrado");
+  const role = managedRole(rows[0].role);
+  if (user.role === "ADMIN" && role === "ADMIN") throw new HttpError(403, "Somente o proprietário pode cancelar este convite");
+  await transaction([
+    { text: `UPDATE team_invitations SET revoked_at = NOW(), updated_at = NOW() WHERE id = $1 AND organization_id = $2`, params: [id, user.organizationId] },
+    auditStatement(user, "TEAM_INVITATION_REVOKED", "INVITATION", id, { email: String(rows[0].email), role }),
+  ]);
+  empty(response);
+}
+
+async function changeMemberRole(request: ApiRequest, response: ApiResponse, id: string, user: AuthenticatedUser) {
+  requireAdmin(user.role);
+  if (id === user.id) throw new HttpError(400, "Seu próprio nível de acesso não pode ser alterado por esta tela");
+  const body = await jsonBody<UnknownBody>(request);
+  const nextRole = managedRole(body.role);
+  const rows = await query<QueryRow>(`SELECT id, name, email, role, job_title, avatar_url, active FROM users
+    WHERE id = $1 AND organization_id = $2 AND active = TRUE`, [id, user.organizationId]);
+  const target = rows[0];
+  if (!target) throw new HttpError(404, "Colaborador não encontrado");
+  const currentRole = String(target.role) as UserRole;
+  if (currentRole === "OWNER") throw new HttpError(403, "O nível do proprietário não pode ser alterado");
+  if (user.role === "ADMIN" && (currentRole === "ADMIN" || nextRole === "ADMIN")) {
+    throw new HttpError(403, "Somente o proprietário pode administrar outros administradores");
+  }
+  await transaction([
+    { text: `UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3`, params: [nextRole, id, user.organizationId] },
+    auditStatement(user, "TEAM_MEMBER_ROLE_CHANGED", "USER", id, { email: String(target.email), previousRole: currentRole, role: nextRole }),
+  ]);
+  json(response, 200, memberView({ ...target, role: nextRole, entry_type: "USER" }));
+}
+
+async function removeTeamMember(response: ApiResponse, id: string, user: AuthenticatedUser) {
   requireAdmin(user.role);
   if (id === user.id) throw new HttpError(400, "Use a opção Excluir minha conta para desativar seu próprio acesso");
-  const rows = await query<QueryRow>(`UPDATE users SET active = FALSE, updated_at = $1 WHERE id = $2 AND organization_id = $3 AND active = TRUE RETURNING id`,
-    [new Date().toISOString(), id, user.organizationId]);
-  if (!rows[0]) throw new HttpError(404, "Colaborador não encontrado");
+  const rows = await query<QueryRow>(`SELECT id, email, role FROM users WHERE id = $1 AND organization_id = $2 AND active = TRUE`, [id, user.organizationId]);
+  const target = rows[0];
+  if (!target) throw new HttpError(404, "Colaborador não encontrado");
+  const targetRole = String(target.role) as UserRole;
+  if (targetRole === "OWNER") throw new HttpError(403, "O proprietário da empresa não pode ser desativado");
+  if (user.role === "ADMIN" && targetRole === "ADMIN") throw new HttpError(403, "Somente o proprietário pode desativar outro administrador");
+  await transaction([
+    { text: `UPDATE users SET active = FALSE, auth_version = auth_version + 1, updated_at = NOW()
+      WHERE id = $1 AND organization_id = $2 AND active = TRUE`, params: [id, user.organizationId] },
+    auditStatement(user, "TEAM_MEMBER_DEACTIVATED", "USER", id, { email: String(target.email), role: targetRole }),
+  ]);
   empty(response);
+}
+
+async function listAuditEvents(response: ApiResponse, user: AuthenticatedUser) {
+  requireAdmin(user.role);
+  const rows = await query<QueryRow>(`SELECT a.*, actor.name AS actor_name FROM audit_events a
+    LEFT JOIN users actor ON actor.id = a.actor_user_id
+    WHERE a.organization_id = $1 ORDER BY a.created_at DESC LIMIT 60`, [user.organizationId]);
+  json(response, 200, rows.map(auditView));
 }
 
 async function updatedUser(userId: string) {
@@ -655,6 +885,11 @@ async function changePassword(request: ApiRequest, response: ApiResponse, user: 
 async function deleteAccount(request: ApiRequest, response: ApiResponse, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
   const body = await jsonBody<UnknownBody>(request);
   if (body.confirmation !== "EXCLUIR") throw new HttpError(400, "Digite EXCLUIR para confirmar");
+  if (user.role === "OWNER") {
+    const others = await query<QueryRow>(`SELECT id FROM users WHERE organization_id = $1 AND id <> $2 AND active = TRUE LIMIT 1`,
+      [user.organizationId, user.id]);
+    if (others[0]) throw new HttpError(400, "O proprietário não pode excluir a conta enquanto houver outros colaboradores ativos");
+  }
   await query(`UPDATE users SET active = FALSE, email = $1, avatar_url = NULL, updated_at = $2 WHERE id = $3`,
     [`deleted+${user.id}@invalid.local`, new Date(), user.id]);
   empty(response);
@@ -681,6 +916,8 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (method === "POST" && samePath(path, "auth", "login")) return await login(request, response);
     if (method === "POST" && samePath(path, "auth", "forgot-password")) return await requestPasswordReset(request, response);
     if (method === "POST" && samePath(path, "auth", "reset-password")) return await resetPassword(request, response);
+    if (method === "POST" && samePath(path, "auth", "invitations", "inspect")) return await inspectInvitation(request, response);
+    if (method === "POST" && samePath(path, "auth", "invitations", "accept")) return await acceptInvitation(request, response);
     if (method === "GET" && samePath(path, "public", "media", "*")) return await publicMedia(response, path[2]);
 
     const user = await authenticated(request.headers);
@@ -710,7 +947,11 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (samePath(path, "statuses", "*") && method === "DELETE") return await deleteStatus(response, path[1], user);
     if (samePath(path, "team") && method === "GET") return await listTeam(response, user.organizationId);
     if (samePath(path, "team") && method === "POST") return await addTeamMember(request, response, user);
+    if (samePath(path, "team", "invitations", "*", "resend") && method === "POST") return await resendTeamInvitation(response, path[2], user);
+    if (samePath(path, "team", "invitations", "*") && method === "DELETE") return await revokeTeamInvitation(response, path[2], user);
+    if (samePath(path, "team", "*", "role") && method === "PATCH") return await changeMemberRole(request, response, path[1], user);
     if (samePath(path, "team", "*") && method === "DELETE") return await removeTeamMember(response, path[1], user);
+    if (samePath(path, "audit-logs") && method === "GET") return await listAuditEvents(response, user);
     if (samePath(path, "account", "profile") && method === "PATCH") return await updateProfile(request, response, user);
     if (samePath(path, "account", "avatar") && method === "POST") return await uploadAvatar(request, response, user);
     if (samePath(path, "account", "password") && method === "PATCH") return await changePassword(request, response, user);

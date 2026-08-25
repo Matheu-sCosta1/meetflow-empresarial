@@ -7,7 +7,7 @@ export type AuthenticatedUser = {
   organizationId: string;
   name: string;
   email: string;
-  role: "ADMIN" | "MEMBER";
+  role: UserRole;
   jobTitle: string;
   avatarUrl: string | null;
   organizationName: string;
@@ -15,12 +15,14 @@ export type AuthenticatedUser = {
   authVersion: number;
 };
 
+export type UserRole = "OWNER" | "ADMIN" | "MANAGER" | "MEMBER";
+
 type UserRow = {
   id: string;
   organization_id: string;
   name: string;
   email: string;
-  role: "ADMIN" | "MEMBER";
+  role: UserRole;
   job_title: string;
   avatar_url: string | null;
   organization_name: string;

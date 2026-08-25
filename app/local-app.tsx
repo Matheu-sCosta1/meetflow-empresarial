@@ -4,12 +4,12 @@
 import {
   AlertTriangle, ArrowRight, BriefcaseBusiness, Building2, CalendarDays, Check,
   Bell, CheckCheck, CheckCircle2, ChevronRight, Clock3, CornerUpLeft, Eye, EyeOff, Hash, Home, ImagePlus, Loader2,
-  LockKeyhole, LogOut, Mail, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck,
+  History, LockKeyhole, LogOut, Mail, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck,
   Sparkles, Pencil, RefreshCw, Trash2, UserPlus, Users, Video, Wifi, WifiOff, X,
 } from "lucide-react";
 import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AppNotification, AuthUser, Channel, ChatMessage, MeetFlowApi, Meeting, TeamMember, TeamStatus, meetFlowApi,
+  AppNotification, AuditEvent, AuthUser, Channel, ChatMessage, MeetFlowApi, Meeting, TeamInvitation, TeamMember, TeamStatus, UserRole, meetFlowApi,
 } from "./lib/meetflow-api";
 
 const SESSION_KEY = "meetflow.local.session";
@@ -30,6 +30,13 @@ const nav: Array<{ id: View; label: string; icon: typeof Home }> = [
 
 function initials(name: string) {
   return name.split(" ").filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+}
+
+function roleName(role: UserRole) {
+  if (role === "OWNER") return "Proprietário";
+  if (role === "ADMIN") return "Administrador";
+  if (role === "MANAGER") return "Gestor";
+  return "Colaborador";
 }
 
 function formatDate(value: string) {
@@ -135,7 +142,8 @@ export default function LocalApp() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.hash.replace(/^#/, "")).has("reset_token")) {
+    const linkParameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    if (linkParameters.has("reset_token") || linkParameters.has("invite_token")) {
       queueMicrotask(() => setSession(null));
       return;
     }
@@ -183,12 +191,16 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
     if (typeof window === "undefined") return "";
     return new URLSearchParams(window.location.hash.replace(/^#/, "")).get("reset_token") ?? "";
   });
+  const [inviteToken, setInviteToken] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.hash.replace(/^#/, "")).get("invite_token") ?? "";
+  });
 
   useEffect(() => {
-    if (resetToken && window.location.hash) {
+    if ((resetToken || inviteToken) && window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-  }, [resetToken]);
+  }, [inviteToken, resetToken]);
 
   const passwordChecks = [
     { label: "10 caracteres", valid: password.length >= 10 },
@@ -232,7 +244,7 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
         <footer><ShieldCheck /> Ambiente protegido e conectado ao PostgreSQL</footer>
       </aside>
       <section className="local-auth-card">
-        {resetToken ? <PasswordResetForm token={resetToken} onBack={() => { setResetToken(""); changeMode("login"); }} /> : <>
+        {inviteToken ? <InvitationAcceptForm token={inviteToken} onAuthenticated={(result) => onAuthenticated({ ...result, remember: true })} onBack={() => { setInviteToken(""); changeMode("login"); }} /> : resetToken ? <PasswordResetForm token={resetToken} onBack={() => { setResetToken(""); changeMode("login"); }} /> : <>
         <div className="auth-tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => changeMode("login")}>Entrar</button><button type="button" role="tab" aria-selected={mode === "register"} className={mode === "register" ? "active" : ""} onClick={() => changeMode("register")}>Criar empresa</button></div>
         <div className="auth-heading"><span className="auth-secure"><LockKeyhole /> ACESSO SEGURO</span><h2>{mode === "login" ? "Bem-vindo de volta" : "Crie seu workspace"}</h2><p>{mode === "login" ? "Use os dados cadastrados para acessar sua empresa." : "Configure sua conta de administrador em poucos passos."}</p></div>
         {error && <div className="form-error">{error}</div>}
@@ -298,6 +310,44 @@ function PasswordResetForm({ token, onBack }: { token: string; onBack: () => voi
   return <div className="reset-password-card"><button className="auth-back" type="button" onClick={onBack}>Voltar ao login</button><div className="auth-heading"><span className="auth-secure"><LockKeyhole /> LINK SEGURO</span><h2>Crie uma nova senha</h2><p>Escolha uma senha forte e diferente da anterior.</p></div>{error && <div className="form-error">{error}</div>}<form className="auth-form" onSubmit={submit}><label>Nova senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Crie uma senha forte" /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff /> : <Eye />}</button></div></label><label>Confirmar nova senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repita a nova senha" /></div></label><div className="password-strength"><div><span style={{ width: `${checks.filter((item) => item.valid).length / checks.length * 100}%` }} /></div><small>{checks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>Salvar nova senha <ArrowRight /></>}</button></form></div>;
 }
 
+function InvitationAcceptForm({ token, onAuthenticated, onBack }: { token: string; onAuthenticated: (result: { token: string; user: AuthUser }) => void; onBack: () => void }) {
+  const [invitation, setInvitation] = useState<TeamInvitation | null>();
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const checks = [
+    { label: "10 caracteres", valid: password.length >= 10 },
+    { label: "letra maiúscula", valid: /[A-Z]/.test(password) },
+    { label: "número", valid: /\d/.test(password) },
+  ];
+
+  useEffect(() => {
+    let alive = true;
+    meetFlowApi.inspectInvitation(token)
+      .then((details) => { if (alive) setInvitation(details); })
+      .catch((reason) => { if (alive) { setInvitation(null); setError(reason instanceof Error ? reason.message : "Não foi possível abrir este convite"); } });
+    return () => { alive = false; };
+  }, [token]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    if (!checks.every((item) => item.valid)) { setError("Crie uma senha que atenda a todos os requisitos"); return; }
+    if (password !== confirmation) { setError("As senhas informadas não são iguais"); return; }
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    try { onAuthenticated(await meetFlowApi.acceptInvitation(token, password, form.get("acceptTerms") === "on")); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível aceitar o convite"); }
+    finally { setBusy(false); }
+  }
+
+  if (invitation === undefined) return <div className="invitation-loading"><Loader2 className="spin" /><h2>Validando seu convite</h2><p>Estamos confirmando os dados da empresa.</p></div>;
+  if (!invitation) return <div className="invitation-invalid"><span><AlertTriangle /></span><h2>Convite indisponível</h2><p>{error}</p><button className="button button-dark button-wide" onClick={onBack}>Voltar ao login</button></div>;
+  return <div className="invitation-accept"><button className="auth-back" type="button" onClick={onBack}>Voltar ao login</button><div className="auth-heading"><span className="auth-secure"><UserPlus /> CONVITE SEGURO</span><h2>Entre para {invitation.organizationName}</h2><p>{invitation.invitedByName} convidou você como <strong>{roleName(invitation.role)}</strong>.</p></div><div className="invitation-profile"><span className="avatar avatar-fallback">{initials(invitation.name)}</span><div><strong>{invitation.name}</strong><small>{invitation.jobTitle} · {invitation.email}</small></div><ShieldCheck /></div>{error && <div className="form-error">{error}</div>}<form className="auth-form" onSubmit={submit}><label>Crie sua senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Crie uma senha forte" /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff /> : <Eye />}</button></div></label><label>Confirme sua senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repita sua senha" /></div></label><div className="password-strength"><div><span style={{ width: `${checks.filter((item) => item.valid).length / checks.length * 100}%` }} /></div><small>{checks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><label className="auth-check"><input name="acceptTerms" type="checkbox" required /><span>Aceito os Termos de Uso e a Política de Privacidade do MeetFlow.</span></label><button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>Aceitar convite e entrar <ArrowRight /></>}</button></form></div>;
+}
+
 function LocalDashboard({ session, onSession }: { session: Session; onSession: (session: Session | null) => void }) {
   const api = useMemo(() => meetFlowApi.authenticated(session.token), [session.token]);
   const [user, setUser] = useState(session.user);
@@ -311,12 +361,14 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [statuses, setStatuses] = useState<TeamStatus[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [realtimeState, setRealtimeState] = useState<RealtimeState>("checking");
   const [activeChannel, setActiveChannel] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [story, setStory] = useState<TeamStatus | null>(null);
+  const canManageTeam = user.role === "OWNER" || user.role === "ADMIN";
 
   const showError = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : "Algo deu errado"), []);
   const refresh = useCallback(async () => {
@@ -324,8 +376,9 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
     const to = new Date(Date.now() + 365 * 86400000).toISOString();
     const results = await Promise.allSettled([
       api.meetings(from, to), api.channels(), api.team(), api.statuses(), api.notifications(),
+      canManageTeam ? api.auditLog() : Promise.resolve([] as AuditEvent[]),
     ]);
-    const [meetingResult, channelResult, memberResult, statusResult, notificationResult] = results;
+    const [meetingResult, channelResult, memberResult, statusResult, notificationResult, auditResult] = results;
     if (meetingResult.status === "fulfilled") setMeetings(Array.isArray(meetingResult.value) ? meetingResult.value : []);
     if (channelResult.status === "fulfilled") {
       const nextChannels = Array.isArray(channelResult.value) ? channelResult.value : [];
@@ -335,12 +388,13 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
     if (memberResult.status === "fulfilled") setMembers(Array.isArray(memberResult.value) ? memberResult.value : []);
     if (statusResult.status === "fulfilled") setStatuses(Array.isArray(statusResult.value) ? statusResult.value : []);
     if (notificationResult.status === "fulfilled") setNotifications(Array.isArray(notificationResult.value) ? notificationResult.value : []);
+    if (auditResult.status === "fulfilled") setAuditEvents(Array.isArray(auditResult.value) ? auditResult.value : []);
     // Notificações são uma melhoria progressiva: a API Java local antiga pode não expor a rota ainda.
     const failed = results.slice(0, 4).find((result) => result.status === "rejected");
     if (failed?.status === "rejected") showError(failed.reason);
     else setError("");
     setLoading(false);
-  }, [api, showError]);
+  }, [api, canManageTeam, showError]);
 
   const refreshChannels = useCallback(async () => {
     const next = await api.channels();
@@ -483,7 +537,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
             {view === "agenda" && <Agenda meetings={meetings} onCreate={() => setModal("meeting")} onCancel={async (meeting) => { const reason = window.prompt("Motivo do cancelamento:", "Reunião cancelada pela equipe"); if (!reason) return; try { await api.cancelMeeting(meeting.id, reason); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={(id) => { setMessages([]); setActiveChannel(id); }} messages={messages} loading={messagesLoading} user={user} api={api} realtimeState={realtimeState} onNewChannel={() => setModal("channel")} onRefresh={async () => { setMessagesLoading(true); try { setMessages(await api.messages(activeChannel)); await markChannelRead(activeChannel); } finally { setMessagesLoading(false); } }} onSend={async (content, replyToId) => { const sent = await api.sendMessage(activeChannel, content, replyToId); setMessages((current) => current.some((message) => message.id === sent.id) ? current : [...current, sent]); await markChannelRead(activeChannel); }} onEdit={async (messageId, content) => { const updated = await api.editMessage(activeChannel, messageId, content); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onDelete={async (messageId) => { const updated = await api.deleteMessage(activeChannel, messageId); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onError={showError} />}
             {view === "status" && <Statuses statuses={statuses} api={api} user={user} onCreate={() => setModal("status")} onStory={setStory} onDelete={async (id) => { try { await api.deleteStatus(id); await refresh(); } catch (cause) { showError(cause); } }} />}
-            {view === "equipe" && <Team members={members} api={api} currentUserId={user.id} canAdd={user.role === "ADMIN"} onAdd={() => setModal("member")} onRemove={async (id) => { if (!window.confirm("Desativar o acesso deste colaborador?")) return; try { await api.removeMember(id); await refresh(); } catch (cause) { showError(cause); } }} />}
+            {view === "equipe" && <Team members={members} auditEvents={auditEvents} api={api} currentUserId={user.id} currentUserRole={user.role} canManage={canManageTeam} onAdd={() => setModal("member")} onRemove={async (id) => { if (!window.confirm("Desativar o acesso deste colaborador?")) return; try { await api.removeMember(id); await refresh(); } catch (cause) { showError(cause); } }} onRole={async (id, role) => { try { await api.changeMemberRole(id, role); await refresh(); } catch (cause) { showError(cause); } }} onResend={async (id) => { try { await api.resendInvitation(id); await refresh(); } catch (cause) { showError(cause); await refresh(); } }} onRevoke={async (id) => { if (!window.confirm("Cancelar este convite? O link enviado deixará de funcionar.")) return; try { await api.revokeInvitation(id); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "configuracoes" && <ProfileSettings user={user} api={api} onUser={replaceUser} onLogout={logout} onDelete={() => setModal("delete")} onError={showError} />}
           </div>
         </DashboardErrorBoundary>
@@ -492,7 +546,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
       {modal === "meeting" && <MeetingModal members={members.filter((member) => member.active)} onClose={() => setModal(null)} onSave={async (input) => { await api.createMeeting(input); setModal(null); await refresh(); }} onError={showError} />}
       {modal === "channel" && <SimpleModal title="Novo canal" kicker="CHAT DA EQUIPE" onClose={() => setModal(null)} onSubmit={async (form) => { const channel = await api.createChannel(String(form.get("name"))); setModal(null); await refresh(); setActiveChannel(channel.id); }} onError={showError}><label>Nome do canal<input name="name" required maxLength={100} placeholder="Ex.: Comercial" /></label></SimpleModal>}
       {modal === "status" && <StatusModal onClose={() => setModal(null)} onSave={async (caption, file) => { await api.publishStatus(caption, file); setModal(null); await refresh(); }} onError={showError} />}
-      {modal === "member" && <MemberModal onClose={() => setModal(null)} onSave={async (input) => { await api.addMember(input); setModal(null); await refresh(); }} onError={showError} />}
+      {modal === "member" && <MemberModal currentUserRole={user.role} onClose={() => setModal(null)} onSave={async (input) => { await api.inviteMember(input); setModal(null); await refresh(); }} onError={showError} />}
       {modal === "delete" && <DeleteModal onClose={() => setModal(null)} onDelete={async () => { await api.deleteAccount(); logout(); }} onError={showError} />}
       {story && <StoryViewer status={story} api={api} onClose={() => setStory(null)} />}
     </main>
@@ -575,7 +629,7 @@ function Chat({ channels, activeChannel, onChannel, messages, loading, user, api
     <article className="chat-room">
       <header><div><span className="channel-avatar"><Hash /></span><div><strong>{current?.name ?? "Selecione um canal"}</strong><small className={`chat-sync ${realtimeState}`}>{realtimeState === "live" ? <><i /> conectado em tempo real</> : <><RefreshCw /> sincronização automática</>}</small></div></div><button className="chat-refresh" onClick={() => void onRefresh().catch(onError)} disabled={loading || !current} title="Atualizar mensagens" aria-label="Atualizar mensagens"><RefreshCw className={loading ? "spin" : ""} /></button></header>
       <div className="messages" ref={messageListRef}><div className="day-divider"><span>{loading ? "Atualizando" : "Mensagens"}</span></div>{messages.length ? messages.map((message) => {
-        const canManage = !message.deleted && (message.senderId === user.id || user.role === "ADMIN");
+        const canManage = !message.deleted && (message.senderId === user.id || user.role === "OWNER" || user.role === "ADMIN");
         return <div key={message.id} className={`message-row${message.senderId === user.id ? " own" : ""}${message.deleted ? " deleted" : ""}`}><Avatar name={message.senderName} api={api} small /><div className="message-content"><span><strong>{message.senderName}</strong><time>{formatTime(message.createdAt)}</time>{message.editedAt && !message.deleted && <small>editada</small>}</span><div className="message-bubble">{message.replyTo && <div className="reply-quote"><CornerUpLeft /><span><strong>{message.replyTo.senderName}</strong>{message.replyTo.deleted ? "Mensagem removida" : message.replyTo.content}</span></div>}<p>{message.deleted ? "Esta mensagem foi removida." : message.content}</p>{!message.deleted && <div className="message-actions"><button onClick={() => beginReply(message)} title="Responder" aria-label="Responder"><CornerUpLeft /></button>{message.senderId === user.id && <button onClick={() => beginEdit(message)} title="Editar" aria-label="Editar"><Pencil /></button>}{canManage && <button onClick={() => void remove(message)} title="Excluir" aria-label="Excluir"><Trash2 /></button>}</div>}</div></div></div>;
       }) : !loading && <Empty icon={MessageCircle} title="Comece a conversa" text="As mensagens aparecerão para todos neste canal." />}<div ref={endRef} /></div>
       <div className="composer-area">{(replying || editing) && <div className={`composer-context${editing ? " editing" : ""}`}><span>{editing ? <Pencil /> : <CornerUpLeft />}</span><div><strong>{editing ? "Editando sua mensagem" : `Respondendo a ${replying?.senderName}`}</strong><small>{editing?.content || replying?.content}</small></div><button onClick={() => { setEditing(null); setReplying(null); setContent(""); }} aria-label="Cancelar"><X /></button></div>}<form className="composer" onSubmit={send}><textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && (replying || editing)) { setReplying(null); setEditing(null); setContent(""); } else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder={editing ? "Edite sua mensagem" : `Mensagem em #${current?.name ?? "canal"}`} disabled={!current || sending} aria-label="Escrever mensagem" /><span>{content.length}/4000</span><button className="send-button" aria-label={editing ? "Salvar edição" : "Enviar mensagem"} disabled={!content.trim() || sending}>{sending ? <Loader2 className="spin" /> : editing ? <Check /> : <Send />}</button></form></div>
@@ -587,8 +641,22 @@ function Statuses({ statuses, api, user, onCreate, onStory, onDelete }: { status
   return <section className="subpage"><div className="page-head"><div><span className="section-kicker">ATUALIZAÇÕES EM 24 HORAS</span><h2>Status da equipe</h2><p>Compartilhe novidades rápidas em texto, foto ou vídeo.</p></div><button className="button button-primary" onClick={onCreate}><ImagePlus /> Publicar status</button></div><div className="status-grid"><button className="status-card create-card" onClick={onCreate}><span><Plus /></span><strong>Novo status</strong><small>Imagem, vídeo ou texto</small></button>{statuses.map((status) => <article className="status-card" key={status.id} onClick={() => onStory(status)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onStory(status); } }} role="button" tabIndex={0}>{status.mediaType === "IMAGE" && status.mediaUrl && <img src={api.mediaUrl(status.mediaUrl)} alt="Status" />}{status.mediaType === "VIDEO" && status.mediaUrl && <video src={api.mediaUrl(status.mediaUrl)} muted />}{status.mediaType === "TEXT" && <span className="status-quote">“</span>}<div className="status-card-overlay"><span className="avatar avatar-fallback">{initials(status.authorName)}</span><span><strong>{status.authorName}</strong><small>{relativeTime(status.createdAt)}</small></span>{status.authorId === user.id && <button className="status-delete" aria-label="Excluir status" onClick={(event) => { event.stopPropagation(); onDelete(status.id); }}><Trash2 /></button>}</div><p>{status.caption}</p></article>)}</div></section>;
 }
 
-function Team({ members, api, currentUserId, canAdd, onAdd, onRemove }: { members: TeamMember[]; api: MeetFlowApi; currentUserId: string; canAdd: boolean; onAdd: () => void; onRemove: (id: string) => void }) {
-  return <section className="subpage"><div className="page-head"><div><span className="section-kicker">PESSOAS DA EMPRESA</span><h2>Colaboradores</h2><p>Cada pessoa possui sua própria conta e acesso ao workspace.</p></div>{canAdd && <button className="button button-primary" onClick={onAdd}><UserPlus /> Adicionar colaborador</button>}</div><div className="team-grid">{members.map((member) => <article className="member-card" key={member.id}><div className="member-top"><Avatar name={member.name} url={member.avatarUrl} api={api} /><span className={`member-status${member.active ? "" : " pending"}`}>{member.active ? "Ativo" : "Removido"}</span></div><h3>{member.name}</h3><p>{member.jobTitle}</p><small>{member.email}</small><footer><span>{member.role === "ADMIN" ? "Administrador" : "Colaborador"}</span>{canAdd && member.active && member.id !== currentUserId ? <button onClick={() => onRemove(member.id)}><Trash2 /> Desativar</button> : <ShieldCheck />}</footer></article>)}</div></section>;
+function auditDescription(event: AuditEvent) {
+  const email = typeof event.metadata.email === "string" ? event.metadata.email : "um integrante";
+  if (event.action === "TEAM_INVITATION_CREATED") return `enviou um convite para ${email}`;
+  if (event.action === "TEAM_INVITATION_RESENT") return `reenviou o convite de ${email}`;
+  if (event.action === "TEAM_INVITATION_REVOKED") return `cancelou o convite de ${email}`;
+  if (event.action === "TEAM_INVITATION_ACCEPTED") return `${email} aceitou o convite`;
+  if (event.action === "TEAM_MEMBER_ROLE_CHANGED") return `alterou o acesso de ${email} para ${roleName(String(event.metadata.role ?? "MEMBER") as UserRole)}`;
+  if (event.action === "TEAM_MEMBER_DEACTIVATED") return `desativou o acesso de ${email}`;
+  if (event.action === "TEAM_INVITATION_EMAIL_FAILED") return `registrou uma falha ao convidar ${email}`;
+  return "realizou uma alteração administrativa";
+}
+
+function Team({ members, auditEvents, api, currentUserId, currentUserRole, canManage, onAdd, onRemove, onRole, onResend, onRevoke }: { members: TeamMember[]; auditEvents: AuditEvent[]; api: MeetFlowApi; currentUserId: string; currentUserRole: UserRole; canManage: boolean; onAdd: () => void; onRemove: (id: string) => void; onRole: (id: string, role: "ADMIN" | "MANAGER" | "MEMBER") => void; onResend: (id: string) => void; onRevoke: (id: string) => void }) {
+  const pending = members.filter((member) => member.invitation && member.status === "PENDING").length;
+  const active = members.filter((member) => member.active).length;
+  return <section className="subpage"><div className="page-head"><div><span className="section-kicker">PESSOAS E ACESSOS</span><h2>Equipe e permissões</h2><p>Convide pessoas com segurança e controle o que cada nível pode administrar.</p></div>{canManage && <button className="button button-primary" onClick={onAdd}><UserPlus /> Convidar colaborador</button>}</div><div className="team-summary"><div><Users /><span><strong>{active}</strong> acessos ativos</span></div><div><Mail /><span><strong>{pending}</strong> convites pendentes</span></div><p><ShieldCheck /> Cada convite possui um link individual, expira em 7 dias e funciona uma única vez.</p></div><div className="team-grid">{members.map((member) => { const editable = canManage && member.active && member.id !== currentUserId && member.role !== "OWNER" && (currentUserRole === "OWNER" || member.role !== "ADMIN"); return <article className={`member-card${member.invitation ? " invitation-card" : ""}`} key={`${member.invitation ? "invite" : "user"}-${member.id}`}><div className="member-top"><Avatar name={member.name} url={member.avatarUrl} api={api} /><span className={`member-status ${member.status.toLowerCase()}`}>{member.status === "ACTIVE" ? "Ativo" : member.status === "PENDING" ? "Convite enviado" : member.status === "EXPIRED" ? "Expirado" : "Removido"}</span></div><h3>{member.name}</h3><p>{member.jobTitle}</p><small>{member.email}</small>{member.invitation && member.expiresAt && <div className="invite-expiry"><Clock3 /> {member.status === "EXPIRED" ? "O convite expirou" : `Válido até ${formatDate(member.expiresAt)}`}</div>}<footer>{editable ? <label className="role-select">Acesso<select value={member.role} onChange={(event) => onRole(member.id, event.target.value as "ADMIN" | "MANAGER" | "MEMBER")}><option value="MEMBER">Colaborador</option><option value="MANAGER">Gestor</option>{currentUserRole === "OWNER" && <option value="ADMIN">Administrador</option>}</select></label> : <span>{roleName(member.role)}</span>}{member.invitation && canManage ? <div className="member-actions"><button onClick={() => onResend(member.id)}><Send /> Reenviar</button><button className="danger-link" onClick={() => onRevoke(member.id)}><X /> Cancelar</button></div> : editable ? <button className="danger-link" onClick={() => onRemove(member.id)}><Trash2 /> Desativar</button> : <ShieldCheck />}</footer></article>; })}</div>{canManage && <section className="panel audit-panel"><div className="panel-head"><div><span className="section-kicker">RASTREABILIDADE</span><h3>Histórico administrativo</h3></div><History /></div><div className="audit-list">{auditEvents.length ? auditEvents.slice(0, 12).map((event) => <article key={event.id}><span><History /></span><div><p><strong>{event.actorName || "Sistema"}</strong> {auditDescription(event)}</p><small>{formatDate(event.createdAt)} às {formatTime(event.createdAt)}</small></div></article>) : <div className="audit-empty"><ShieldCheck /> As próximas alterações de acesso aparecerão aqui.</div>}</div></section>}</section>;
 }
 
 function ProfileSettings({ user, api, onUser, onLogout, onDelete, onError }: { user: AuthUser; api: MeetFlowApi; onUser: (user: AuthUser) => void; onLogout: () => void; onDelete: () => void; onError: (reason: unknown) => void }) {
@@ -597,7 +665,7 @@ function ProfileSettings({ user, api, onUser, onLogout, onDelete, onError }: { u
   async function update(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(false); const form = new FormData(event.currentTarget); try { onUser(await api.updateProfile({ name: String(form.get("name")), jobTitle: String(form.get("jobTitle")), organizationName: String(form.get("organizationName")) })); setSaved(true); } catch (reason) { onError(reason); } }
   async function avatar(file?: File) { if (!file) return; try { onUser(await api.uploadAvatar(file)); } catch (reason) { onError(reason); } }
   async function password(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setPasswordSaved(false); const form = new FormData(event.currentTarget); try { await api.changePassword(String(form.get("currentPassword")), String(form.get("newPassword"))); event.currentTarget.reset(); setPasswordSaved(true); } catch (reason) { onError(reason); } }
-  return <section className="subpage"><div className="page-head"><div><span className="section-kicker">SUA CONTA</span><h2>Configurações</h2><p>Atualize seus dados, foto e preferências de acesso.</p></div></div><div className="settings-layout"><nav><button className="active"><Users /> Perfil</button><button onClick={onLogout}><LogOut /> Sair da conta</button></nav><div className="settings-stack"><section className="panel settings-panel"><div className="panel-head"><div><span className="section-kicker">IDENTIDADE</span><h3>Perfil profissional</h3></div>{saved && <span className="save-success"><CheckCircle2 /> Salvo</span>}</div><div className="avatar-editor"><Avatar name={user.name} url={user.avatarUrl} api={api} /><label><ImagePlus /> Alterar foto<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void avatar(event.target.files?.[0])} /></label><span>JPG, PNG ou WebP, com até 3,5 MB na hospedagem gratuita.</span></div><form className="settings-form" onSubmit={update}><label>Nome completo<input name="name" required defaultValue={user.name} maxLength={120} /></label><label>Cargo<input name="jobTitle" required defaultValue={user.jobTitle} maxLength={120} /></label><label>E-mail<div className="readonly-input">{user.email}</div></label><label>Empresa<input name="organizationName" required defaultValue={user.organizationName} maxLength={120} readOnly={user.role !== "ADMIN"} /></label><div className="settings-actions"><button className="button button-primary">Salvar alterações</button><button type="button" className="button button-soft" onClick={onLogout}>Sair</button></div></form></section><section className="panel password-panel"><div className="panel-head"><div><span className="section-kicker">SEGURANÇA</span><h3>Alterar senha</h3></div>{passwordSaved && <span className="save-success"><CheckCircle2 /> Senha alterada</span>}</div><form onSubmit={password}><label>Senha atual<input name="currentPassword" type="password" required /></label><label>Nova senha<input name="newPassword" type="password" required minLength={10} placeholder="10 caracteres, maiúscula e número" /></label><button className="button button-dark">Atualizar senha</button></form></section><div className="danger-zone"><AlertTriangle /><div><strong>Excluir minha conta</strong><p>Desativa seu acesso permanentemente sem apagar o histórico empresarial.</p></div><button onClick={onDelete}>Excluir conta</button></div></div></div></section>;
+  return <section className="subpage"><div className="page-head"><div><span className="section-kicker">SUA CONTA</span><h2>Configurações</h2><p>Atualize seus dados, foto e preferências de acesso.</p></div></div><div className="settings-layout"><nav><button className="active"><Users /> Perfil</button><button onClick={onLogout}><LogOut /> Sair da conta</button></nav><div className="settings-stack"><section className="panel settings-panel"><div className="panel-head"><div><span className="section-kicker">IDENTIDADE</span><h3>Perfil profissional</h3></div>{saved && <span className="save-success"><CheckCircle2 /> Salvo</span>}</div><div className="avatar-editor"><Avatar name={user.name} url={user.avatarUrl} api={api} /><label><ImagePlus /> Alterar foto<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void avatar(event.target.files?.[0])} /></label><span>JPG, PNG ou WebP, com até 3,5 MB na hospedagem gratuita.</span></div><form className="settings-form" onSubmit={update}><label>Nome completo<input name="name" required defaultValue={user.name} maxLength={120} /></label><label>Cargo<input name="jobTitle" required defaultValue={user.jobTitle} maxLength={120} /></label><label>E-mail<div className="readonly-input">{user.email}</div></label><label>Empresa<input name="organizationName" required defaultValue={user.organizationName} maxLength={120} readOnly={user.role !== "OWNER" && user.role !== "ADMIN"} /></label><div className="settings-actions"><button className="button button-primary">Salvar alterações</button><button type="button" className="button button-soft" onClick={onLogout}>Sair</button></div></form></section><section className="panel password-panel"><div className="panel-head"><div><span className="section-kicker">SEGURANÇA</span><h3>Alterar senha</h3></div>{passwordSaved && <span className="save-success"><CheckCircle2 /> Senha alterada</span>}</div><form onSubmit={password}><label>Senha atual<input name="currentPassword" type="password" required /></label><label>Nova senha<input name="newPassword" type="password" required minLength={10} placeholder="10 caracteres, maiúscula e número" /></label><button className="button button-dark">Atualizar senha</button></form></section><div className="danger-zone"><AlertTriangle /><div><strong>Excluir minha conta</strong><p>Desativa seu acesso permanentemente sem apagar o histórico empresarial.</p></div><button onClick={onDelete}>Excluir conta</button></div></div></div></section>;
 }
 
 function MeetingModal({ members, onClose, onSave, onError }: { members: TeamMember[]; onClose: () => void; onSave: (input: Record<string, unknown>) => Promise<void>; onError: (reason: unknown) => void }) {
@@ -671,8 +739,8 @@ function StatusModal({ onClose, onSave, onError }: { onClose: () => void; onSave
   </SimpleModal>;
 }
 
-function MemberModal({ onClose, onSave, onError }: { onClose: () => void; onSave: (input: { name: string; email: string; password: string; jobTitle: string; role: "ADMIN" | "MEMBER" }) => Promise<void>; onError: (reason: unknown) => void }) {
-  return <SimpleModal title="Novo colaborador" kicker="CONTA DA EQUIPE" onClose={onClose} onError={onError} onSubmit={async (form) => onSave({ name: String(form.get("name")), email: String(form.get("email")), password: String(form.get("password")), jobTitle: String(form.get("jobTitle")), role: String(form.get("role")) as "ADMIN" | "MEMBER" })}><div className="form-row two"><label>Nome<input name="name" required maxLength={120} /></label><label>Cargo<input name="jobTitle" required maxLength={120} placeholder="Analista comercial" /></label></div><label>E-mail<input name="email" type="email" required /></label><label>Senha inicial<input name="password" type="password" required minLength={10} placeholder="10 caracteres, maiúscula e número" /></label><label>Permissão<select name="role"><option value="MEMBER">Colaborador</option><option value="ADMIN">Administrador</option></select></label><div className="modal-note"><ShieldCheck /> A pessoa poderá entrar imediatamente usando este e-mail e senha.</div></SimpleModal>;
+function MemberModal({ currentUserRole, onClose, onSave, onError }: { currentUserRole: UserRole; onClose: () => void; onSave: (input: { name: string; email: string; jobTitle: string; role: "ADMIN" | "MANAGER" | "MEMBER" }) => Promise<void>; onError: (reason: unknown) => void }) {
+  return <SimpleModal title="Convidar colaborador" kicker="ACESSO SEGURO À EQUIPE" submitLabel="Enviar convite" onClose={onClose} onError={onError} onSubmit={async (form) => onSave({ name: String(form.get("name")), email: String(form.get("email")), jobTitle: String(form.get("jobTitle")), role: String(form.get("role")) as "ADMIN" | "MANAGER" | "MEMBER" })}><div className="form-row two"><label>Nome<input name="name" required maxLength={120} /></label><label>Cargo<input name="jobTitle" required maxLength={120} placeholder="Analista comercial" /></label></div><label>E-mail<input name="email" type="email" required inputMode="email" placeholder="colaborador@empresa.com" /></label><label>Nível de acesso<select name="role"><option value="MEMBER">Colaborador — uso diário</option><option value="MANAGER">Gestor — coordenação da equipe</option>{currentUserRole === "OWNER" && <option value="ADMIN">Administrador — gerencia acessos</option>}</select></label><div className="modal-note"><Mail /> A pessoa receberá um link individual para criar a própria senha. Você nunca precisará conhecer a senha dela.</div></SimpleModal>;
 }
 
 function DeleteModal({ onClose, onDelete, onError }: { onClose: () => void; onDelete: () => Promise<void>; onError: (reason: unknown) => void }) {

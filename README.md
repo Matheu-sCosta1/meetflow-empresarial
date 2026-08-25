@@ -12,7 +12,9 @@ Plataforma empresarial para organizar reuniões, conversar com a equipe, adminis
 - empresas isoladas por `organizationId`;
 - perfis profissionais com foto, nome e cargo;
 - configurações de perfil, empresa, senha, saída e exclusão de conta;
-- colaboradores com níveis `ADMIN` e `MEMBER`;
+- convites de equipe por e-mail com link individual, expirável e de uso único;
+- colaboradores com níveis `OWNER`, `ADMIN`, `MANAGER` e `MEMBER`;
+- histórico administrativo de convites, alterações de acesso e desativações;
 - agenda compartilhada e prevenção de conflitos de horário;
 - confirmação, lembretes de 24 horas e 1 hora e aviso de cancelamento por e-mail para responsável e convidados;
 - canais de chat com histórico persistente, respostas, edição e exclusão controlada;
@@ -93,7 +95,7 @@ Abra a aplicação, selecione **Criar empresa** e informe nome, empresa, e-mail 
 - os horários-padrão de segunda a sexta;
 - o canal `Geral`.
 
-Depois, o administrador pode cadastrar colaboradores. Cada pessoa recebe uma conta própria e entra com o e-mail e a senha inicial. Não existem usuários ou mensagens de demonstração.
+Depois, o proprietário ou administrador pode convidar colaboradores por e-mail. Cada pessoa abre o link individual, cria a própria senha e entra diretamente no workspace da empresa. Não existem senhas temporárias, usuários ou mensagens de demonstração.
 
 ## Deploy gratuito na Vercel
 
@@ -170,6 +172,8 @@ Resposta esperada:
 | `POST /api/auth/login` | Entrar e receber JWT |
 | `POST /api/auth/forgot-password` | Solicitar link seguro de recuperação |
 | `POST /api/auth/reset-password` | Criar nova senha com token válido |
+| `POST /api/auth/invitations/inspect` | Validar um convite sem expor o token na URL do servidor |
+| `POST /api/auth/invitations/accept` | Aceitar convite e criar a própria senha |
 | `GET /api/auth/me` | Consultar usuário atual |
 | `PATCH /api/account/profile` | Atualizar perfil e empresa |
 | `POST /api/account/avatar` | Atualizar foto do perfil |
@@ -189,8 +193,12 @@ Resposta esperada:
 | `GET /api/realtime/token` | Emitir token temporário e restrito |
 | `GET/POST /api/statuses` | Listar e publicar status |
 | `DELETE /api/statuses/{id}` | Excluir status próprio |
-| `GET/POST /api/team` | Listar e cadastrar colaboradores |
+| `GET/POST /api/team` | Listar equipe e enviar convite seguro |
+| `PATCH /api/team/{id}/role` | Alterar nível de acesso |
+| `POST /api/team/invitations/{id}/resend` | Invalidar o link anterior e reenviar convite |
+| `DELETE /api/team/invitations/{id}` | Cancelar convite pendente |
 | `DELETE /api/team/{id}` | Desativar colaborador |
+| `GET /api/audit-logs` | Consultar histórico administrativo da empresa |
 | `GET /api/public/media/{id}` | Exibir mídia ativa por identificador seguro |
 
 Todas as rotas privadas validam o JWT e limitam consultas à empresa do usuário autenticado.
@@ -235,10 +243,9 @@ O workflow em `.github/workflows/ci.yml` executa essas verificações em pushes 
 
 ## Próximas evoluções
 
-1. convites e lembretes por e-mail;
-2. integração com Google Calendar, Outlook, Meet, Teams e Zoom;
-3. confirmação de presença e lembretes internos de reunião;
-4. reagendamento pelo convidado;
-5. reações e respostas nos status;
-6. armazenamento de objetos e miniaturas de vídeo;
-7. testes de integração e monitoramento de produção.
+1. integração com Google Calendar, Outlook, Meet, Teams e Zoom;
+2. confirmação de presença e ciclo completo das reuniões;
+3. reagendamento pelo convidado;
+4. reações e respostas nos status;
+5. armazenamento de objetos e miniaturas de vídeo;
+6. testes de integração, backups e monitoramento de produção.

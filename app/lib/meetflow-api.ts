@@ -1,8 +1,10 @@
+export type UserRole = "OWNER" | "ADMIN" | "MANAGER" | "MEMBER";
+
 export type AuthUser = {
   id: string;
   name: string;
   email: string;
-  role: "ADMIN" | "MEMBER";
+  role: UserRole;
   jobTitle: string;
   avatarUrl?: string;
   organizationId: string;
@@ -60,7 +62,36 @@ export type AppNotification = {
 };
 export type RealtimeConfig = { enabled: boolean };
 export type TeamStatus = { id: string; authorId: string; authorName: string; mediaType: "IMAGE" | "VIDEO" | "TEXT"; mediaUrl?: string; caption?: string; createdAt: string; expiresAt: string };
-export type TeamMember = { id: string; name: string; email: string; role: "ADMIN" | "MEMBER"; jobTitle: string; avatarUrl?: string; active: boolean };
+export type TeamMember = {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  jobTitle: string;
+  avatarUrl?: string;
+  active: boolean;
+  status: "ACTIVE" | "INACTIVE" | "PENDING" | "EXPIRED";
+  invitation: boolean;
+  expiresAt?: string;
+};
+export type TeamInvitation = {
+  email: string;
+  name: string;
+  jobTitle: string;
+  role: Exclude<UserRole, "OWNER">;
+  organizationName: string;
+  invitedByName: string;
+  expiresAt: string;
+};
+export type AuditEvent = {
+  id: string;
+  action: string;
+  actorName?: string;
+  targetType: string;
+  targetId?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
 
 function defaultApiUrl() {
   const configured = process.env.NEXT_PUBLIC_API_URL?.trim();
@@ -94,6 +125,14 @@ export class MeetFlowApi {
 
   resetPassword(token: string, newPassword: string) {
     return this.request<{ message: string }>("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, newPassword }) });
+  }
+
+  inspectInvitation(token: string) {
+    return this.request<TeamInvitation>("/auth/invitations/inspect", { method: "POST", body: JSON.stringify({ token }) });
+  }
+
+  acceptInvitation(token: string, password: string, acceptTerms: boolean) {
+    return this.request<AuthResponse>("/auth/invitations/accept", { method: "POST", body: JSON.stringify({ token, password, acceptTerms }) });
   }
 
   me() { return this.request<AuthUser>("/auth/me"); }
@@ -167,10 +206,16 @@ export class MeetFlowApi {
   deleteStatus(id: string) { return this.request<void>(`/statuses/${id}`, { method: "DELETE" }); }
 
   team() { return this.request<TeamMember[]>("/team"); }
-  addMember(input: { name: string; email: string; password: string; jobTitle: string; role: "ADMIN" | "MEMBER" }) {
+  inviteMember(input: { name: string; email: string; jobTitle: string; role: "ADMIN" | "MANAGER" | "MEMBER" }) {
     return this.request<TeamMember>("/team", { method: "POST", body: JSON.stringify(input) });
   }
   removeMember(id: string) { return this.request<void>(`/team/${id}`, { method: "DELETE" }); }
+  changeMemberRole(id: string, role: "ADMIN" | "MANAGER" | "MEMBER") {
+    return this.request<TeamMember>(`/team/${id}/role`, { method: "PATCH", body: JSON.stringify({ role }) });
+  }
+  resendInvitation(id: string) { return this.request<TeamMember>(`/team/invitations/${id}/resend`, { method: "POST" }); }
+  revokeInvitation(id: string) { return this.request<void>(`/team/invitations/${id}`, { method: "DELETE" }); }
+  auditLog() { return this.request<AuditEvent[]>("/audit-logs"); }
 
   updateProfile(input: { name: string; jobTitle: string; organizationName?: string }) {
     return this.request<AuthUser>("/account/profile", { method: "PATCH", body: JSON.stringify(input) });
