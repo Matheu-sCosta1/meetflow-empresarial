@@ -11,6 +11,9 @@ import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRe
 import {
   AppNotification, AuditEvent, AuthUser, Channel, ChatMessage, MeetFlowApi, Meeting, TeamInvitation, TeamMember, TeamStatus, UserRole, meetFlowApi,
 } from "./lib/meetflow-api";
+import {
+  LEGAL_EFFECTIVE_DATE, PRIVACY_VERSION, TERMS_VERSION, LegalDocumentPage, legalDocumentFromHash, legalDocumentUrl,
+} from "./legal-documents";
 
 const SESSION_KEY = "meetflow.local.session";
 const MAX_STATUS_UPLOAD_BYTES = 3_000_000;
@@ -139,9 +142,11 @@ function Avatar({ name, url, api, small = false }: { name: string; url?: string;
 }
 
 export default function LocalApp() {
+  const [legalDocument] = useState(() => typeof window === "undefined" ? null : legalDocumentFromHash(window.location.hash));
   const [session, setSession] = useState<Session | null | undefined>(undefined);
 
   useEffect(() => {
+    if (legalDocument) return;
     const linkParameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     if (linkParameters.has("reset_token") || linkParameters.has("invite_token")) {
       queueMicrotask(() => setSession(null));
@@ -160,7 +165,7 @@ export default function LocalApp() {
       window.sessionStorage.removeItem(SESSION_KEY);
       queueMicrotask(() => setSession(null));
     }
-  }, []);
+  }, [legalDocument]);
 
   const saveSession = (next: Session | null) => {
     window.localStorage.removeItem(SESSION_KEY);
@@ -169,6 +174,7 @@ export default function LocalApp() {
     setSession(next);
   };
 
+  if (legalDocument) return <LegalDocumentPage kind={legalDocument} />;
   if (session === undefined) return <Loading label="Abrindo seu workspace" />;
   if (!session) return <LocalAuth onAuthenticated={saveSession} />;
   return <LocalDashboard session={session} onSession={saveSession} />;
@@ -186,7 +192,7 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [avatar, setAvatar] = useState<File>();
-  const [dialog, setDialog] = useState<"terms" | "privacy" | "recovery" | null>(null);
+  const [dialog, setDialog] = useState<"recovery" | null>(null);
   const [resetToken, setResetToken] = useState(() => {
     if (typeof window === "undefined") return "";
     return new URLSearchParams(window.location.hash.replace(/^#/, "")).get("reset_token") ?? "";
@@ -228,6 +234,7 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
           name: String(form.get("name")), jobTitle: String(form.get("jobTitle")),
           email: String(form.get("email")), password,
           organizationName: String(form.get("organizationName")), acceptTerms: form.get("acceptTerms") === "on",
+          termsVersion: TERMS_VERSION, privacyVersion: PRIVACY_VERSION,
         });
         const user = avatar ? await meetFlowApi.authenticated(result.token).uploadAvatar(avatar).catch(() => result.user) : result.user;
         onAuthenticated({ ...result, user, remember: true });
@@ -252,14 +259,14 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
           {mode === "register" && <><div className="auth-form-section"><span>1</span><div><strong>Seus dados</strong><small>Perfil do administrador</small></div></div><div className="auth-field-grid"><label>Nome completo<div className="input-with-icon"><Users /><input name="name" required maxLength={120} autoComplete="name" placeholder="Seu nome completo" /></div></label><label>Cargo<div className="input-with-icon"><BriefcaseBusiness /><input name="jobTitle" required maxLength={120} placeholder="Ex.: Diretor comercial" /></div></label></div><div className="auth-form-section"><span>2</span><div><strong>Dados da empresa</strong><small>Workspace privado</small></div></div><label>Nome da empresa<div className="input-with-icon"><Building2 /><input name="organizationName" required maxLength={120} autoComplete="organization" placeholder="Nome da sua empresa" /></div></label></>}
           <label>E-mail profissional<div className="input-with-icon"><Mail /><input name="email" required type="email" autoComplete="email" inputMode="email" placeholder="voce@empresa.com" /></div></label>
           <div className={mode === "register" ? "auth-field-grid" : ""}><label>Senha<div className="input-with-icon"><LockKeyhole /><input name="password" required type={showPassword ? "text" : "password"} minLength={mode === "register" ? 10 : 8} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={mode === "login" ? "Digite sua senha" : "Crie uma senha forte"} /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff /> : <Eye />}</button></div></label>{mode === "register" && <label>Confirmar senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repita a senha" /></div></label>}</div>
-          {mode === "register" && <><div className="password-strength"><div><span style={{ width: `${passwordChecks.filter((item) => item.valid).length / passwordChecks.length * 100}%` }} /></div><small>{passwordChecks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><label className="avatar-register"><span className="avatar avatar-fallback">{avatar ? <ImagePlus /> : "MF"}</span><div><strong>Foto de perfil <em>opcional</em></strong><small>{avatar?.name ?? "JPG, PNG ou WebP, até 3,5 MB"}</small></div><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setAvatar(event.target.files?.[0])} /></label><label className="auth-check"><input name="acceptTerms" type="checkbox" required /><span>Aceito os <button type="button" onClick={() => setDialog("terms")}>Termos de Uso</button> e a <button type="button" onClick={() => setDialog("privacy")}>Política de Privacidade</button>.</span></label></>}
+          {mode === "register" && <><div className="password-strength"><div><span style={{ width: `${passwordChecks.filter((item) => item.valid).length / passwordChecks.length * 100}%` }} /></div><small>{passwordChecks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><label className="avatar-register"><span className="avatar avatar-fallback">{avatar ? <ImagePlus /> : "MF"}</span><div><strong>Foto de perfil <em>opcional</em></strong><small>{avatar?.name ?? "JPG, PNG ou WebP, até 3,5 MB"}</small></div><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setAvatar(event.target.files?.[0])} /></label><label className="auth-check"><input name="acceptTerms" type="checkbox" required /><span>Li e aceito os <a href={legalDocumentUrl("terms")} target="_blank" rel="noreferrer">Termos de Uso</a> e a <a href={legalDocumentUrl("privacy")} target="_blank" rel="noreferrer">Política de Privacidade</a> (versão {TERMS_VERSION}, vigente desde {LEGAL_EFFECTIVE_DATE}).</span></label></>}
           {mode === "login" && <div className="login-options"><label className="auth-check"><input name="remember" type="checkbox" /><span>Manter conectado neste dispositivo</span></label><button type="button" onClick={() => setDialog("recovery")}>Esqueci minha senha</button></div>}
           <button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>{mode === "login" ? "Entrar no MeetFlow" : "Criar meu workspace"}<ArrowRight /></>}</button>
         </form>
         </>}
         <small><ShieldCheck /> Seus dados são protegidos e não aparecem para outras empresas</small>
       </section>
-      {dialog && <div className="auth-dialog-backdrop" role="presentation" onMouseDown={() => setDialog(null)}><section className="auth-dialog" role="dialog" aria-modal="true" aria-label={dialog === "recovery" ? "Recuperar senha" : undefined} onMouseDown={(event) => event.stopPropagation()}><header><span><ShieldCheck /></span><button onClick={() => setDialog(null)} aria-label="Fechar"><X /></button></header>{dialog === "recovery" ? <PasswordRecoveryRequest onClose={() => setDialog(null)} /> : <>{dialog === "terms" && <><h3>Termos de Uso</h3><p>Ao criar um workspace, você declara que fornecerá informações verdadeiras, manterá suas credenciais protegidas e utilizará o MeetFlow de forma legal e responsável.</p><p>A empresa administradora é responsável pelas contas de colaboradores e pelos conteúdos publicados em seu ambiente.</p></>}{dialog === "privacy" && <><h3>Política de Privacidade</h3><p>Contas, reuniões, mensagens e mídias são armazenadas para operar o workspace. Cada registro é vinculado à empresa autenticada e não é exibido a outros workspaces.</p><p>Senhas são armazenadas com hash seguro e nunca ficam disponíveis em texto aberto.</p></>}<button className="button button-dark button-wide" onClick={() => setDialog(null)}>Entendi</button></>}</section></div>}
+      {dialog && <div className="auth-dialog-backdrop" role="presentation" onMouseDown={() => setDialog(null)}><section className="auth-dialog" role="dialog" aria-modal="true" aria-label="Recuperar senha" onMouseDown={(event) => event.stopPropagation()}><header><span><ShieldCheck /></span><button onClick={() => setDialog(null)} aria-label="Fechar"><X /></button></header><PasswordRecoveryRequest onClose={() => setDialog(null)} /></section></div>}
     </main>
   );
 }
@@ -338,14 +345,14 @@ function InvitationAcceptForm({ token, onAuthenticated, onBack }: { token: strin
     if (password !== confirmation) { setError("As senhas informadas não são iguais"); return; }
     const form = new FormData(event.currentTarget);
     setBusy(true);
-    try { onAuthenticated(await meetFlowApi.acceptInvitation(token, password, form.get("acceptTerms") === "on")); }
+    try { onAuthenticated(await meetFlowApi.acceptInvitation(token, password, form.get("acceptTerms") === "on", TERMS_VERSION, PRIVACY_VERSION)); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível aceitar o convite"); }
     finally { setBusy(false); }
   }
 
   if (invitation === undefined) return <div className="invitation-loading"><Loader2 className="spin" /><h2>Validando seu convite</h2><p>Estamos confirmando os dados da empresa.</p></div>;
   if (!invitation) return <div className="invitation-invalid"><span><AlertTriangle /></span><h2>Convite indisponível</h2><p>{error}</p><button className="button button-dark button-wide" onClick={onBack}>Voltar ao login</button></div>;
-  return <div className="invitation-accept"><button className="auth-back" type="button" onClick={onBack}>Voltar ao login</button><div className="auth-heading"><span className="auth-secure"><UserPlus /> CONVITE SEGURO</span><h2>Entre para {invitation.organizationName}</h2><p>{invitation.invitedByName} convidou você como <strong>{roleName(invitation.role)}</strong>.</p></div><div className="invitation-profile"><span className="avatar avatar-fallback">{initials(invitation.name)}</span><div><strong>{invitation.name}</strong><small>{invitation.jobTitle} · {invitation.email}</small></div><ShieldCheck /></div>{error && <div className="form-error">{error}</div>}<form className="auth-form" onSubmit={submit}><label>Crie sua senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Crie uma senha forte" /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff /> : <Eye />}</button></div></label><label>Confirme sua senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repita sua senha" /></div></label><div className="password-strength"><div><span style={{ width: `${checks.filter((item) => item.valid).length / checks.length * 100}%` }} /></div><small>{checks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><label className="auth-check"><input name="acceptTerms" type="checkbox" required /><span>Aceito os Termos de Uso e a Política de Privacidade do MeetFlow.</span></label><button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>Aceitar convite e entrar <ArrowRight /></>}</button></form></div>;
+  return <div className="invitation-accept"><button className="auth-back" type="button" onClick={onBack}>Voltar ao login</button><div className="auth-heading"><span className="auth-secure"><UserPlus /> CONVITE SEGURO</span><h2>Entre para {invitation.organizationName}</h2><p>{invitation.invitedByName} convidou você como <strong>{roleName(invitation.role)}</strong>.</p></div><div className="invitation-profile"><span className="avatar avatar-fallback">{initials(invitation.name)}</span><div><strong>{invitation.name}</strong><small>{invitation.jobTitle} · {invitation.email}</small></div><ShieldCheck /></div>{error && <div className="form-error">{error}</div>}<form className="auth-form" onSubmit={submit}><label>Crie sua senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Crie uma senha forte" /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff /> : <Eye />}</button></div></label><label>Confirme sua senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repita a senha" /></div></label><div className="password-strength"><div><span style={{ width: `${checks.filter((item) => item.valid).length / checks.length * 100}%` }} /></div><small>{checks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><label className="auth-check"><input name="acceptTerms" type="checkbox" required /><span>Li e aceito os <a href={legalDocumentUrl("terms")} target="_blank" rel="noreferrer">Termos de Uso</a> e a <a href={legalDocumentUrl("privacy")} target="_blank" rel="noreferrer">Política de Privacidade</a> (versão {TERMS_VERSION}).</span></label><button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>Aceitar convite e entrar <ArrowRight /></>}</button></form></div>;
 }
 
 function LocalDashboard({ session, onSession }: { session: Session; onSession: (session: Session | null) => void }) {

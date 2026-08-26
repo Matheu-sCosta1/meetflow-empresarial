@@ -49,6 +49,8 @@ const schema = [
     job_title VARCHAR(120) NOT NULL DEFAULT 'Colaborador',
     avatar_url VARCHAR(500),
     terms_accepted_at TIMESTAMPTZ,
+    terms_version VARCHAR(20),
+    privacy_version VARCHAR(20),
     auth_version INTEGER NOT NULL DEFAULT 0,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL,
@@ -56,6 +58,8 @@ const schema = [
   )`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS job_title VARCHAR(120) NOT NULL DEFAULT 'Colaborador'`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_version VARCHAR(20)`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_version VARCHAR(20)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0`,
   `UPDATE users candidate SET role = 'OWNER', updated_at = NOW()
     WHERE candidate.id IN (

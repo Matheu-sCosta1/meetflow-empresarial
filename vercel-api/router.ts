@@ -15,6 +15,8 @@ const VIDEO_TYPES = new Set(["video/mp4", "video/quicktime", "video/webm"]);
 const PASSWORD_RESET_EXPIRES_MINUTES = 60;
 const PASSWORD_RESET_RESPONSE = "Se este e-mail estiver cadastrado, você receberá um link para criar uma nova senha.";
 const TEAM_INVITATION_EXPIRES_DAYS = 7;
+const TERMS_VERSION = "2026.08";
+const PRIVACY_VERSION = "2026.08";
 const MANAGED_ROLES = new Set<UserRole>(["ADMIN", "MANAGER", "MEMBER"]);
 
 function iso(value: unknown) {
@@ -82,6 +84,14 @@ function validateStrongPassword(password: string, label = "A senha") {
   if (password.length < 10 || !/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) {
     throw new HttpError(400, `${label} deve ter ao menos 10 caracteres, uma letra maiúscula e um número`);
   }
+}
+
+function acceptedLegalVersions(body: UnknownBody) {
+  if (body.acceptTerms !== true) throw new HttpError(400, "Aceite os Termos de Uso e a Política de Privacidade para continuar");
+  if (body.termsVersion !== TERMS_VERSION || body.privacyVersion !== PRIVACY_VERSION) {
+    throw new HttpError(409, "Os documentos jurídicos foram atualizados. Reabra os Termos de Uso e a Política de Privacidade antes de continuar");
+  }
+  return { termsVersion: TERMS_VERSION, privacyVersion: PRIVACY_VERSION };
 }
 
 function secureTokenHash(token: string) {
@@ -246,7 +256,7 @@ async function register(request: ApiRequest, response: ApiResponse) {
   const password = required(body.password, "Senha", 200);
   if (!isEmail(email)) throw new HttpError(400, "Informe um e-mail válido");
   validateStrongPassword(password);
-  if (body.acceptTerms !== true) throw new HttpError(400, "Aceite os Termos de Uso e a Política de Privacidade para continuar");
+  const legalVersions = acceptedLegalVersions(body);
   if (await userByEmail(email)) throw new HttpError(409, "Já existe uma conta com este e-mail");
 
   const now = new Date().toISOString();
@@ -256,8 +266,8 @@ async function register(request: ApiRequest, response: ApiResponse) {
   const passwordHash = await hashPassword(password);
   const statements: DbStatement[] = [
     { text: `INSERT INTO organizations(id, name, slug, created_at, updated_at) VALUES ($1,$2,$3,$4,$4)`, params: [organizationId, organizationName, organizationSlug, now] },
-    { text: `INSERT INTO users(id, organization_id, name, email, password_hash, role, job_title, terms_accepted_at, active, created_at, updated_at)
-      VALUES ($1,$2,$3,$4,$5,'OWNER',$6,$7,TRUE,$7,$7)`, params: [userId, organizationId, name, email, passwordHash, jobTitle, now] },
+    { text: `INSERT INTO users(id, organization_id, name, email, password_hash, role, job_title, terms_accepted_at, terms_version, privacy_version, active, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,$5,'OWNER',$6,$7,$8,$9,TRUE,$7,$7)`, params: [userId, organizationId, name, email, passwordHash, jobTitle, now, legalVersions.termsVersion, legalVersions.privacyVersion] },
     { text: `INSERT INTO chat_channels(id, organization_id, created_by_id, name, type, created_at, updated_at)
       VALUES ($1,$2,$3,'Geral','GROUP',$4,$4)`, params: [randomUUID(), organizationId, userId, now] },
   ];
@@ -374,7 +384,7 @@ async function acceptInvitation(request: ApiRequest, response: ApiResponse) {
   const token = required(body.token, "Convite", 200);
   const password = required(body.password, "Senha", 200);
   validateStrongPassword(password);
-  if (body.acceptTerms !== true) throw new HttpError(400, "Aceite os Termos de Uso e a Política de Privacidade para continuar");
+  const legalVersions = acceptedLegalVersions(body);
   const invite = await invitationDetails(token);
   if (!invite) throw new HttpError(400, "Este convite expirou, foi cancelado ou já foi utilizado");
   const email = String(invite.email).toLowerCase();
@@ -388,9 +398,9 @@ async function acceptInvitation(request: ApiRequest, response: ApiResponse) {
     { text: `UPDATE team_invitations SET accepted_at = $1, updated_at = $1
       WHERE id = $2 AND token_hash = $3 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > $1`,
     params: [now, String(invite.id), secureTokenHash(token)] },
-    { text: `INSERT INTO users(id, organization_id, name, email, password_hash, role, job_title, terms_accepted_at, active, created_at, updated_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,TRUE,$8,$8)`,
-    params: [userId, organizationId, String(invite.name), email, await hashPassword(password), role, String(invite.job_title), now] },
+    { text: `INSERT INTO users(id, organization_id, name, email, password_hash, role, job_title, terms_accepted_at, terms_version, privacy_version, active, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TRUE,$8,$8)`,
+    params: [userId, organizationId, String(invite.name), email, await hashPassword(password), role, String(invite.job_title), now, legalVersions.termsVersion, legalVersions.privacyVersion] },
   ];
   for (let day = 1; day <= 5; day += 1) statements.push({ text: `INSERT INTO availabilities(id, owner_id, day_of_week, start_time, end_time, timezone, active, created_at, updated_at)
     VALUES ($1,$2,$3,'09:00','18:00','America/Sao_Paulo',TRUE,$4,$4)`, params: [randomUUID(), userId, day, now] });

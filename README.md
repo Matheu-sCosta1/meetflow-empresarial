@@ -97,6 +97,17 @@ Abra a aplicação, selecione **Criar empresa** e informe nome, empresa, e-mail 
 
 Depois, o proprietário ou administrador pode convidar colaboradores por e-mail. Cada pessoa abre o link individual, cria a própria senha e entra diretamente no workspace da empresa. Não existem senhas temporárias, usuários ou mensagens de demonstração.
 
+## Documentação jurídica pública
+
+Os links do cadastro abrem documentos públicos, responsivos e preparados para impressão:
+
+- `/#document=terms` — Termos de Uso;
+- `/#document=privacy` — Política de Privacidade.
+
+Os documentos descrevem a fase atual do produto, os papéis da organização e do MeetFlow, dados tratados, finalidades, fornecedores, retenção, segurança, direitos dos titulares, incidentes, responsabilidades e limites de disponibilidade. O aceite grava a data e as versões vigentes (`2026.08`) no cadastro do usuário.
+
+Esta documentação é uma base transparente para análise empresarial. Antes de contratação comercial, deve ser revisada por profissional jurídico e complementada com razão social, CNPJ, endereço, canal de suporte e privacidade, responsável ou encarregado, SLA e condições comerciais do fornecedor.
+
 ## Deploy gratuito na Vercel
 
 ### Variáveis necessárias

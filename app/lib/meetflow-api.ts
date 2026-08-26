@@ -111,7 +111,7 @@ export class MeetFlowApi {
 
   authenticated(token: string) { return new MeetFlowApi(this.baseUrl, token); }
 
-  register(input: { name: string; jobTitle: string; email: string; password: string; organizationName: string; acceptTerms: boolean }) {
+  register(input: { name: string; jobTitle: string; email: string; password: string; organizationName: string; acceptTerms: boolean; termsVersion: string; privacyVersion: string }) {
     return this.request<AuthResponse>("/auth/register", { method: "POST", body: JSON.stringify(input) });
   }
 
@@ -131,8 +131,8 @@ export class MeetFlowApi {
     return this.request<TeamInvitation>("/auth/invitations/inspect", { method: "POST", body: JSON.stringify({ token }) });
   }
 
-  acceptInvitation(token: string, password: string, acceptTerms: boolean) {
-    return this.request<AuthResponse>("/auth/invitations/accept", { method: "POST", body: JSON.stringify({ token, password, acceptTerms }) });
+  acceptInvitation(token: string, password: string, acceptTerms: boolean, termsVersion: string, privacyVersion: string) {
+    return this.request<AuthResponse>("/auth/invitations/accept", { method: "POST", body: JSON.stringify({ token, password, acceptTerms, termsVersion, privacyVersion }) });
   }
 
   me() { return this.request<AuthUser>("/auth/me"); }
