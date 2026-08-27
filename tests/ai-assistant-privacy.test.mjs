@@ -26,7 +26,10 @@ test("sends AI requests through the authenticated server route", () => {
 });
 
 test("uses the Vercel identity and requests zero-data-retention routing", () => {
-  assert.match(ai, /process\.env\.AI_GATEWAY_API_KEY\?\.trim\(\) \|\| process\.env\.VERCEL_OIDC_TOKEN\?\.trim\(\)/);
+  assert.match(ai, /process\.env\.AI_GATEWAY_API_KEY\?\.trim\(\)/);
+  assert.match(ai, /process\.env\.VERCEL_OIDC_TOKEN\?\.trim\(\)/);
+  assert.match(ai, /request\.headers\["x-vercel-oidc-token"\]/);
+  assert.match(ai, /aiProvider\(request\)/);
   assert.match(ai, /zeroDataRetention: true/);
   assert.match(ai, /sort: "cost"/);
   assert.match(ai, /AI_GATEWAY_MODEL/);

@@ -78,12 +78,20 @@ export function aiConfigured() {
   return Boolean(
     process.env.AI_GATEWAY_API_KEY?.trim()
     || process.env.VERCEL_OIDC_TOKEN?.trim()
+    || process.env.VERCEL?.trim()
     || process.env.GROQ_API_KEY?.trim(),
   );
 }
 
-function aiProvider(): AiProvider | null {
-  const gatewayKey = process.env.AI_GATEWAY_API_KEY?.trim() || process.env.VERCEL_OIDC_TOKEN?.trim();
+function requestOidcToken(request: ApiRequest) {
+  const value = request.headers["x-vercel-oidc-token"];
+  return (Array.isArray(value) ? value[0] : value)?.trim() || "";
+}
+
+function aiProvider(request: ApiRequest): AiProvider | null {
+  const gatewayKey = process.env.AI_GATEWAY_API_KEY?.trim()
+    || process.env.VERCEL_OIDC_TOKEN?.trim()
+    || requestOidcToken(request);
   if (gatewayKey) {
     return {
       apiKey: gatewayKey,
@@ -104,7 +112,7 @@ function aiProvider(): AiProvider | null {
 }
 
 export async function chatWithAi(request: ApiRequest, response: ApiResponse, user: AuthenticatedUser) {
-  const provider = aiProvider();
+  const provider = aiProvider(request);
   if (!provider) throw new HttpError(503, "A MeetFlow IA está preparada, mas ainda precisa ser ativada");
 
   const body = await jsonBody<{ messages?: unknown }>(request);
