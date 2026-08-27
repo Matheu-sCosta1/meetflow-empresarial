@@ -6,6 +6,7 @@ import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, require
 import { chatChannel, notificationChannel, publishRealtime, realtimeConfigured, realtimeToken } from "./realtime.js";
 import { emailConfigured, sendPasswordResetEmail, sendTeamInvitationEmail, type MeetingEmailRecipient } from "./email.js";
 import { cancelMeetingEmailJobs, meetingEmailJobStatements, processPendingMeetingEmailJobs } from "./meeting-emails.js";
+import { aiConfigured, chatWithAi } from "./ai.js";
 
 type UnknownBody = Record<string, unknown>;
 type QueryRow = Record<string, unknown>;
@@ -916,7 +917,7 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (method === "OPTIONS") return empty(response);
     if (method === "GET" && samePath(path, "health")) {
       assertAuthConfigured();
-      return json(response, 200, { status: "ok", database: "connected", authentication: "configured", realtime: realtimeConfigured() ? "configured" : "fallback", email: emailConfigured() ? "configured" : "pending" });
+      return json(response, 200, { status: "ok", database: "connected", authentication: "configured", realtime: realtimeConfigured() ? "configured" : "fallback", email: emailConfigured() ? "configured" : "pending", ai: aiConfigured() ? "configured" : "pending" });
     }
     if (method === "GET" && samePath(path, "cron", "email-reminders")) {
       if (!cronAuthorized(request)) throw new HttpError(401, "Rotina de lembretes não autorizada");
@@ -933,6 +934,7 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     const user = await authenticated(request.headers);
     if (!user) throw new HttpError(401, "Sua sessão expirou. Entre novamente");
     if (method === "GET" && samePath(path, "auth", "me")) return json(response, 200, userView(user));
+    if (method === "POST" && samePath(path, "ai", "chat")) return await chatWithAi(request, response, user);
     if (method === "GET" && samePath(path, "realtime", "config")) return json(response, 200, { enabled: realtimeConfigured() });
     if (method === "GET" && samePath(path, "realtime", "token")) {
       const token = await realtimeToken(user);

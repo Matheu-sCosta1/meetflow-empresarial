@@ -83,6 +83,14 @@ const schema = [
     blocked_until TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS ai_daily_usage (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    usage_date DATE NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0 CHECK (request_count >= 0),
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY(user_id, usage_date)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_ai_daily_usage_date ON ai_daily_usage(usage_date)`,
   `CREATE TABLE IF NOT EXISTS password_reset_tokens (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

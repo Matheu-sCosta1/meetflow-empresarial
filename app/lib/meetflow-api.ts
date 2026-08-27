@@ -92,6 +92,8 @@ export type AuditEvent = {
   metadata: Record<string, unknown>;
   createdAt: string;
 };
+export type AiConversationMessage = { role: "user" | "assistant"; content: string };
+export type AiChatResponse = { message: string; remaining: number; limit: number };
 
 function defaultApiUrl() {
   const configured = process.env.NEXT_PUBLIC_API_URL?.trim();
@@ -136,6 +138,10 @@ export class MeetFlowApi {
   }
 
   me() { return this.request<AuthUser>("/auth/me"); }
+
+  askAi(messages: AiConversationMessage[]) {
+    return this.request<AiChatResponse>("/ai/chat", { method: "POST", body: JSON.stringify({ messages }) });
+  }
 
   meetings(from: string, to: string) {
     return this.request<Meeting[]>(`/meetings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);

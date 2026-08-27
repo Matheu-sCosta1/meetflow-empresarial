@@ -2,7 +2,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import {
-  AlertTriangle, ArrowRight, BriefcaseBusiness, Building2, CalendarDays, Check,
+  AlertTriangle, ArrowRight, Bot, BriefcaseBusiness, Building2, CalendarDays, Check,
   Bell, CheckCheck, CheckCircle2, ChevronRight, Clock3, CornerUpLeft, Eye, EyeOff, Hash, Home, ImagePlus, Loader2,
   History, LockKeyhole, LogOut, Mail, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck,
   Sparkles, Pencil, RefreshCw, Trash2, UserPlus, Users, Video, Wifi, WifiOff, X,
@@ -14,12 +14,13 @@ import {
 import {
   LEGAL_EFFECTIVE_DATE, PRIVACY_VERSION, TERMS_VERSION, LegalDocumentPage, legalDocumentFromHash, legalDocumentUrl,
 } from "./legal-documents";
+import AiAssistant from "./ai-assistant";
 
 const SESSION_KEY = "meetflow.local.session";
 const MAX_STATUS_UPLOAD_BYTES = 3_000_000;
 const MAX_STATUS_SOURCE_IMAGE_BYTES = 20_000_000;
 type Session = { token: string; user: AuthUser; remember: boolean };
-type View = "inicio" | "agenda" | "chat" | "status" | "equipe" | "configuracoes";
+type View = "inicio" | "agenda" | "chat" | "ia" | "status" | "equipe" | "configuracoes";
 type Modal = "meeting" | "channel" | "status" | "member" | "delete" | null;
 type RealtimeState = "checking" | "live" | "fallback";
 
@@ -27,6 +28,7 @@ const nav: Array<{ id: View; label: string; icon: typeof Home }> = [
   { id: "inicio", label: "Visão geral", icon: Home },
   { id: "agenda", label: "Agenda", icon: CalendarDays },
   { id: "chat", label: "Chat da equipe", icon: MessageCircle },
+  { id: "ia", label: "MeetFlow IA", icon: Bot },
   { id: "status", label: "Status", icon: Video },
   { id: "equipe", label: "Colaboradores", icon: Users },
 ];
@@ -531,7 +533,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
       <aside className={`sidebar${sidebar ? " sidebar-open" : ""}`}>
         <div className="sidebar-brand"><span className="brand-mark"><Sparkles /></span>MeetFlow<button onClick={() => setSidebar(false)} aria-label="Fechar menu"><X /></button></div>
         <div className="workspace-card"><span className="avatar avatar-fallback">{initials(user.organizationName)}</span><div><strong>{user.organizationName}</strong><span>Workspace empresarial</span></div></div>
-        <nav className="main-nav"><span>MENU PRINCIPAL</span>{nav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => switchView(item.id)}><item.icon />{item.label}{item.id === "chat" && unreadChat > 0 && <em>{unreadChat > 99 ? "99+" : unreadChat}</em>}</button>)}</nav>
+        <nav className="main-nav"><span>MENU PRINCIPAL</span>{nav.map((item) => <button key={item.id} className={`${view === item.id ? "active" : ""}${item.id === "ia" ? " ai-nav-item" : ""}`} onClick={() => switchView(item.id)}>{item.id === "ia" ? <span className="ai-nav-icon" aria-hidden="true"><item.icon /></span> : <item.icon />}{item.label}{item.id === "ia" && <small className="ai-nav-badge">IA</small>}{item.id === "chat" && unreadChat > 0 && <em>{unreadChat > 99 ? "99+" : unreadChat}</em>}</button>)}</nav>
         <div className="sidebar-footer"><button className={view === "configuracoes" ? "active" : ""} onClick={() => switchView("configuracoes")}><Settings />Configurações</button><button onClick={logout}><LogOut />Sair</button></div>
         <div className="sidebar-profile"><Avatar name={user.name} url={user.avatarUrl} api={api} /><div><strong>{user.name}</strong><span>{user.jobTitle}</span></div></div>
       </aside>
@@ -543,13 +545,14 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
             {view === "inicio" && <Overview user={user} meetings={activeMeetings} channels={channels} statuses={statuses} members={members} onNavigate={switchView} onMeeting={() => setModal("meeting")} onStatus={() => setModal("status")} onStory={setStory} />}
             {view === "agenda" && <Agenda meetings={meetings} onCreate={() => setModal("meeting")} onCancel={async (meeting) => { const reason = window.prompt("Motivo do cancelamento:", "Reunião cancelada pela equipe"); if (!reason) return; try { await api.cancelMeeting(meeting.id, reason); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={(id) => { setMessages([]); setActiveChannel(id); }} messages={messages} loading={messagesLoading} user={user} api={api} realtimeState={realtimeState} onNewChannel={() => setModal("channel")} onRefresh={async () => { setMessagesLoading(true); try { setMessages(await api.messages(activeChannel)); await markChannelRead(activeChannel); } finally { setMessagesLoading(false); } }} onSend={async (content, replyToId) => { const sent = await api.sendMessage(activeChannel, content, replyToId); setMessages((current) => current.some((message) => message.id === sent.id) ? current : [...current, sent]); await markChannelRead(activeChannel); }} onEdit={async (messageId, content) => { const updated = await api.editMessage(activeChannel, messageId, content); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onDelete={async (messageId) => { const updated = await api.deleteMessage(activeChannel, messageId); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onError={showError} />}
+            {view === "ia" && <AiAssistant api={api} firstName={user.name.split(" ")[0] || "Você"} />}
             {view === "status" && <Statuses statuses={statuses} api={api} user={user} onCreate={() => setModal("status")} onStory={setStory} onDelete={async (id) => { try { await api.deleteStatus(id); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "equipe" && <Team members={members} auditEvents={auditEvents} api={api} currentUserId={user.id} currentUserRole={user.role} canManage={canManageTeam} onAdd={() => setModal("member")} onRemove={async (id) => { if (!window.confirm("Desativar o acesso deste colaborador?")) return; try { await api.removeMember(id); await refresh(); } catch (cause) { showError(cause); } }} onRole={async (id, role) => { try { await api.changeMemberRole(id, role); await refresh(); } catch (cause) { showError(cause); } }} onResend={async (id) => { try { await api.resendInvitation(id); await refresh(); } catch (cause) { showError(cause); await refresh(); } }} onRevoke={async (id) => { if (!window.confirm("Cancelar este convite? O link enviado deixará de funcionar.")) return; try { await api.revokeInvitation(id); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "configuracoes" && <ProfileSettings user={user} api={api} onUser={replaceUser} onLogout={logout} onDelete={() => setModal("delete")} onError={showError} />}
           </div>
         </DashboardErrorBoundary>
       </section>
-      <nav className="mobile-nav">{nav.slice(0, 4).map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => switchView(item.id)}><item.icon />{item.label}</button>)}<button className={view === "configuracoes" ? "active" : ""} onClick={() => switchView("configuracoes")}><Settings />Ajustes</button></nav>
+      <nav className="mobile-nav">{nav.slice(0, 4).map((item) => <button key={item.id} className={`${view === item.id ? "active" : ""}${item.id === "ia" ? " ai-mobile-item" : ""}`} onClick={() => switchView(item.id)}>{item.id === "ia" ? <span className="ai-nav-icon" aria-hidden="true"><item.icon /></span> : <item.icon />}{item.label}</button>)}<button className={view === "configuracoes" ? "active" : ""} onClick={() => switchView("configuracoes")}><Settings />Ajustes</button></nav>
       {modal === "meeting" && <MeetingModal members={members.filter((member) => member.active)} onClose={() => setModal(null)} onSave={async (input) => { await api.createMeeting(input); setModal(null); await refresh(); }} onError={showError} />}
       {modal === "channel" && <SimpleModal title="Novo canal" kicker="CHAT DA EQUIPE" onClose={() => setModal(null)} onSubmit={async (form) => { const channel = await api.createChannel(String(form.get("name"))); setModal(null); await refresh(); setActiveChannel(channel.id); }} onError={showError}><label>Nome do canal<input name="name" required maxLength={100} placeholder="Ex.: Comercial" /></label></SimpleModal>}
       {modal === "status" && <StatusModal onClose={() => setModal(null)} onSave={async (caption, file) => { await api.publishStatus(caption, file); setModal(null); await refresh(); }} onError={showError} />}
