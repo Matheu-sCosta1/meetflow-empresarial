@@ -17,9 +17,10 @@ test("publishes complete terms and privacy documents from the registration flow"
   assert.match(legal, /Vercel/);
   assert.match(legal, /Neon/);
   assert.match(legal, /Brevo/);
-  assert.match(dashboard, /legalDocumentUrl\("terms"\)/);
-  assert.match(dashboard, /legalDocumentUrl\("privacy"\)/);
-  assert.match(dashboard, /target="_blank"/);
+  assert.match(legal, /legalDocumentUrl\("terms"\)/);
+  assert.match(legal, /legalDocumentUrl\("privacy"\)/);
+  assert.match(legal, /target="_blank"/);
+  assert.match(dashboard, /LegalConsent/);
 });
 
 test("provides printable and shareable public legal routes", () => {
@@ -27,6 +28,18 @@ test("provides printable and shareable public legal routes", () => {
   assert.match(legal, /window\.print\(\)/);
   assert.match(legal, /DOCUMENTO PÚBLICO/);
   assert.match(dashboard, /legalDocumentFromHash/);
+  assert.match(dashboard, /hashchange/);
+});
+
+test("offers a professional responsive reading and consent experience", () => {
+  assert.match(legal, /LegalConsent/);
+  assert.match(legal, /legal-consent-documents/);
+  assert.match(legal, /name="acceptTerms"/);
+  assert.match(legal, /readingProgress/);
+  assert.match(legal, /IntersectionObserver/);
+  assert.match(legal, /legal-mobile-sheet/);
+  assert.match(legal, /aria-current/);
+  assert.match(dashboard, /<LegalConsent \/>/);
 });
 
 test("records the exact accepted terms and privacy versions", () => {

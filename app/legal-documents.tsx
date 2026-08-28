@@ -1,7 +1,8 @@
 "use client";
 
-import { ArrowLeft, BookOpenCheck, ExternalLink, FileText, LockKeyhole, Printer, Scale, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowLeft, BookOpenCheck, Check, ChevronDown, Clock3, ExternalLink, FileCheck2, FileText, LockKeyhole, Printer, Scale, ShieldCheck, Sparkles, X } from "lucide-react";
 import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 
 export const TERMS_VERSION = "2026.08";
 export const PRIVACY_VERSION = "2026.08";
@@ -17,12 +18,33 @@ export function legalDocumentFromHash(hash: string): LegalDocumentKind | null {
   return document === "terms" || document === "privacy" ? document : null;
 }
 
+export function LegalConsent() {
+  return <section className="legal-consent" aria-labelledby="legal-consent-title">
+    <div className="legal-consent-head">
+      <span><ShieldCheck /></span>
+      <div><strong id="legal-consent-title">Transparência antes de continuar</strong><small>Consulte os documentos vigentes do MeetFlow.</small></div>
+    </div>
+    <div className="legal-consent-documents">
+      <a href={legalDocumentUrl("terms")} target="_blank" rel="noreferrer"><FileText /><span><strong>Termos de Uso</strong><small>Regras e responsabilidades</small></span><ExternalLink /></a>
+      <a href={legalDocumentUrl("privacy")} target="_blank" rel="noreferrer"><ShieldCheck /><span><strong>Política de Privacidade</strong><small>Dados, LGPD e direitos</small></span><ExternalLink /></a>
+    </div>
+    <label className="legal-consent-check">
+      <input name="acceptTerms" type="checkbox" required />
+      <span className="legal-checkmark"><Check /></span>
+      <span>Li e aceito os <a href={legalDocumentUrl("terms")} target="_blank" rel="noreferrer">Termos de Uso</a> e a <a href={legalDocumentUrl("privacy")} target="_blank" rel="noreferrer">Política de Privacidade</a>, versão {TERMS_VERSION}, vigente desde {LEGAL_EFFECTIVE_DATE}.</span>
+    </label>
+  </section>;
+}
+
 const officialReferences = [
   { label: "Lei Geral de Proteção de Dados Pessoais — LGPD", url: "https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709compilado.htm" },
   { label: "Direitos dos titulares — ANPD", url: "https://www.gov.br/anpd/pt-br/assuntos/titular-de-dados-1/direito-dos-titulares" },
   { label: "Comunicação de incidentes de segurança — ANPD", url: "https://www.gov.br/anpd/pt-br/canais_atendimento/agente-de-tratamento/comunicado-de-incidente-de-seguranca-cis" },
   { label: "Cookies e proteção de dados pessoais — ANPD", url: "https://www.gov.br/anpd/pt-br/centrais-de-conteudo/materiais-educativos-e-publicacoes/guia_orientativo_cookies_e_protecao_de_dados_pessoais" },
 ];
+
+const TERMS_SECTIONS = ["Escopo e aceitação", "Definições", "Contas e credenciais", "Administração", "Uso permitido", "Conteúdo", "Comunicações", "Fornecedores", "Disponibilidade", "Segurança", "Encerramento", "Responsabilidades", "Alterações", "Lei aplicável", "Contato"];
+const PRIVACY_SECTIONS = ["Objetivo", "Papéis LGPD", "Dados tratados", "Origem", "Finalidades", "Compartilhamento", "Transferência", "Cookies", "Retenção", "Segurança", "Direitos", "Menores", "Automação", "Incidentes", "Atualizações", "Referências"];
 
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return <section id={id} className="legal-section"><h2>{title}</h2>{children}</section>;
@@ -79,13 +101,73 @@ export function LegalDocumentPage({ kind }: { kind: LegalDocumentKind }) {
   const terms = kind === "terms";
   const title = terms ? "Termos de Uso" : "Política de Privacidade";
   const version = terms ? TERMS_VERSION : PRIVACY_VERSION;
-  const sections = terms
-    ? ["Escopo e aceitação", "Definições", "Contas e credenciais", "Administração", "Uso permitido", "Conteúdo", "Comunicações", "Fornecedores", "Disponibilidade", "Segurança", "Encerramento", "Responsabilidades", "Alterações", "Lei aplicável", "Contato"]
-    : ["Objetivo", "Papéis LGPD", "Dados tratados", "Origem", "Finalidades", "Compartilhamento", "Transferência", "Cookies", "Retenção", "Segurança", "Direitos", "Menores", "Automação", "Incidentes", "Atualizações", "Referências"];
+  const sections = terms ? TERMS_SECTIONS : PRIVACY_SECTIONS;
   const prefix = terms ? "terms" : "privacy";
+  const [activeSection, setActiveSection] = useState(`${prefix}-1`);
+  const [readingProgress, setReadingProgress] = useState(0);
+  const [mobileIndexOpen, setMobileIndexOpen] = useState(false);
+
+  useEffect(() => {
+    if (!mobileIndexOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [mobileIndexOpen]);
+
+  useEffect(() => {
+    const updateProgress = () => {
+      const height = document.documentElement.scrollHeight - window.innerHeight;
+      setReadingProgress(height > 0 ? Math.min(100, Math.max(0, window.scrollY / height * 100)) : 100);
+    };
+    const observed = sections.map((_, index) => document.getElementById(`${prefix}-${index + 1}`)).filter(Boolean) as HTMLElement[];
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (visible) setActiveSection(visible.target.id);
+    }, { rootMargin: "-18% 0px -68%", threshold: [0, .2, .6] });
+    observed.forEach((section) => observer.observe(section));
+    updateProgress();
+    window.addEventListener("scroll", updateProgress, { passive: true });
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", updateProgress);
+    };
+  }, [prefix, sections]);
+
+  const goToSection = (index: number) => {
+    setMobileIndexOpen(false);
+    document.getElementById(`${prefix}-${index + 1}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return <main className="legal-page">
-    <header className="legal-topbar"><button type="button" className="brand legal-home" onClick={() => window.location.assign("/")}><span className="brand-mark"><Sparkles /></span>MeetFlow</button><nav><a href={legalDocumentUrl("terms")} className={terms ? "active" : ""}>Termos</a><a href={legalDocumentUrl("privacy")} className={!terms ? "active" : ""}>Privacidade</a></nav><button type="button" onClick={() => window.print()}><Printer /> Imprimir</button></header>
-    <div className="legal-hero"><span><BookOpenCheck /> DOCUMENTO PÚBLICO</span><h1>{title}</h1><p>Versão {version} · Vigente desde {LEGAL_EFFECTIVE_DATE}</p><div><FileText /> Documento estruturado para leitura e análise por empresas, administradores, usuários e profissionais jurídicos.</div></div>
-    <div className="legal-layout"><aside><strong>Neste documento</strong>{sections.map((section, index) => <a key={section} href={`#${prefix}-${index + 1}`}><span>{String(index + 1).padStart(2, "0")}</span>{section}</a>)}</aside><article><div className="legal-beta-notice"><LockKeyhole /><p><strong>Fase de validação.</strong> Este documento descreve a operação atual do produto. Antes de contratação comercial ou uso crítico, os dados cadastrais do fornecedor, canais formais, SLA e condições comerciais devem constar em instrumento específico revisado por profissional jurídico.</p></div>{terms ? <TermsContent /> : <PrivacyContent />}<footer><p><strong>MeetFlow Empresarial</strong><br />Versão {version} · {LEGAL_EFFECTIVE_DATE}</p><button type="button" className="button button-dark" onClick={() => window.location.assign("/")}><ArrowLeft /> Voltar ao MeetFlow</button></footer></article></div>
+    <div className="legal-progress" aria-hidden="true"><span style={{ width: `${readingProgress}%` }} /></div>
+    <header className="legal-topbar">
+      <button type="button" className="brand legal-home" onClick={() => window.location.assign("/")} aria-label="Voltar ao MeetFlow"><span className="brand-mark"><Sparkles /></span><span>MeetFlow<small>Central jurídica</small></span></button>
+      <nav aria-label="Documentos jurídicos"><a href={legalDocumentUrl("terms")} className={terms ? "active" : ""}>Termos de Uso</a><a href={legalDocumentUrl("privacy")} className={!terms ? "active" : ""}>Privacidade</a></nav>
+      <button type="button" className="legal-print" onClick={() => window.print()}><Printer /> <span>Imprimir</span></button>
+    </header>
+    <div className="legal-hero">
+      <div className="legal-hero-inner">
+        <span className="legal-eyebrow"><BookOpenCheck /> DOCUMENTO PÚBLICO E VERSIONADO</span>
+        <h1>{title}</h1>
+        <p>Informações claras para empresas, administradores, usuários e profissionais responsáveis por conformidade.</p>
+        <div className="legal-metadata">
+          <span><FileCheck2 /><small>Versão</small><strong>{version}</strong></span>
+          <span><Clock3 /><small>Vigência</small><strong>{LEGAL_EFFECTIVE_DATE}</strong></span>
+          <span><ShieldCheck /><small>Status</small><strong>Documento vigente</strong></span>
+        </div>
+      </div>
+      <div className="legal-hero-seal" aria-hidden="true"><span><Scale /></span><strong>Clareza<br />e confiança</strong><small>MeetFlow Empresarial</small></div>
+    </div>
+    <button type="button" className="legal-mobile-index" onClick={() => setMobileIndexOpen(true)} aria-expanded={mobileIndexOpen}><span><FileText /> Neste documento</span><ChevronDown /></button>
+    {mobileIndexOpen && <div className="legal-index-overlay" role="presentation" onClick={() => setMobileIndexOpen(false)}><nav className="legal-mobile-sheet" aria-label="Sumário do documento" onClick={(event) => event.stopPropagation()}><header><div><small>SUMÁRIO</small><strong>{title}</strong></div><button type="button" onClick={() => setMobileIndexOpen(false)} aria-label="Fechar sumário"><X /></button></header>{sections.map((section, index) => { const id = `${prefix}-${index + 1}`; return <button type="button" key={section} className={activeSection === id ? "active" : ""} onClick={() => goToSection(index)}><span>{String(index + 1).padStart(2, "0")}</span>{section}</button>; })}</nav></div>}
+    <div className="legal-layout">
+      <aside aria-label="Sumário do documento"><div className="legal-aside-head"><small>SUMÁRIO</small><strong>Neste documento</strong><span>{Math.round(readingProgress)}% lido</span></div><div className="legal-aside-progress"><span style={{ width: `${readingProgress}%` }} /></div><nav>{sections.map((section, index) => { const id = `${prefix}-${index + 1}`; return <button type="button" key={section} className={activeSection === id ? "active" : ""} onClick={() => goToSection(index)} aria-current={activeSection === id ? "location" : undefined}><span>{String(index + 1).padStart(2, "0")}</span>{section}</button>; })}</nav></aside>
+      <article>
+        <div className="legal-document-intro"><div className="legal-document-icon"><FileText /></div><div><span>LEITURA IMPORTANTE</span><h2>Antes de utilizar o MeetFlow</h2><p>Leia este documento com atenção. Ele explica direitos, deveres e como o serviço funciona na versão atual.</p></div></div>
+        <div className="legal-beta-notice"><LockKeyhole /><p><strong>Fase de validação.</strong> Este documento descreve a operação atual do produto. Antes de contratação comercial ou uso crítico, os dados cadastrais do fornecedor, canais formais, SLA e condições comerciais devem constar em instrumento específico revisado por profissional jurídico.</p></div>
+        {terms ? <TermsContent /> : <PrivacyContent />}
+        <footer><p><strong>MeetFlow Empresarial</strong><br />{title} · Versão {version}<br />Vigente desde {LEGAL_EFFECTIVE_DATE}</p><div><button type="button" className="legal-footer-print" onClick={() => window.print()}><Printer /> Imprimir documento</button><button type="button" className="button button-dark" onClick={() => window.location.assign("/")}><ArrowLeft /> Voltar ao MeetFlow</button></div></footer>
+      </article>
+    </div>
   </main>;
 }
