@@ -7,11 +7,12 @@ const client = await readFile(new URL("../app/lib/meetflow-api.ts", import.meta.
 const router = await readFile(new URL("../vercel-api/router.ts", import.meta.url), "utf8");
 const ai = await readFile(new URL("../vercel-api/ai.ts", import.meta.url), "utf8");
 const database = await readFile(new URL("../vercel-api/db.ts", import.meta.url), "utf8");
+const dashboard = await readFile(new URL("../app/local-app.tsx", import.meta.url), "utf8");
 
 test("keeps the AI conversation only in temporary React memory", () => {
   assert.match(component, /useState<AiConversationMessage\[]>/);
   assert.match(component, /Limpar conversa/);
-  assert.match(component, /não salva estas mensagens no banco/);
+  assert.match(component, /não salva estas mensagens/);
   assert.doesNotMatch(component, /localStorage|sessionStorage|indexedDB/i);
   assert.doesNotMatch(client, /OPENROUTER_API_KEY|GROQ_API_KEY|AI_GATEWAY_API_KEY|VERCEL_OIDC_TOKEN/);
 });
@@ -28,10 +29,11 @@ test("sends AI requests through the authenticated server route", () => {
 test("prefers the privacy-routed free OpenRouter model and keeps fallbacks", () => {
   assert.match(ai, /process\.env\.OPENROUTER_API_KEY\?\.trim\(\)/);
   assert.match(ai, /process\.env\.OPENROUTER_MODEL\?\.trim\(\)/);
-  assert.match(ai, /openai\/gpt-oss-20b:free/);
+  assert.match(ai, /openrouter\/free/);
   assert.match(ai, /https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
   assert.match(ai, /data_collection: "deny"/);
-  assert.match(ai, /zdr: true/);
+  assert.doesNotMatch(ai, /zdr: true/);
+  assert.match(ai, /sort: "throughput"/);
   assert.ok(ai.indexOf("process.env.OPENROUTER_API_KEY?.trim()", ai.indexOf("function aiProvider"))
     < ai.indexOf("process.env.GROQ_API_KEY?.trim()", ai.indexOf("function aiProvider")));
   assert.match(ai, /process\.env\.GROQ_API_KEY\?\.trim\(\)/);
@@ -65,11 +67,14 @@ test("protects the free quota and bounds temporary context", () => {
   assert.match(ai, /AbortController/);
 });
 
-test("presents the assistant as a polished separate workspace tab", () => {
-  const dashboard = component;
-  assert.match(dashboard, /MeetFlow IA/);
-  assert.match(dashboard, /role="log"/);
-  assert.match(dashboard, /Enter para enviar/);
-  assert.match(dashboard, /Tentar novamente/);
-  assert.match(dashboard, /aria-busy/);
+test("presents the assistant as a polished floating conversation", () => {
+  assert.match(component, /ai-fab/);
+  assert.match(component, /role="dialog"/);
+  assert.match(component, /aria-modal="true"/);
+  assert.match(component, /role="log"/);
+  assert.match(component, /Enter envia/);
+  assert.match(component, /Tentar novamente/);
+  assert.match(component, /aria-busy/);
+  assert.match(dashboard, /mobile-ai-slot/);
+  assert.doesNotMatch(dashboard, /id: "ia"/);
 });

@@ -1,16 +1,19 @@
 "use client";
 
-import { Bot, Eraser, LockKeyhole, RefreshCw, Send, ShieldCheck, Sparkles } from "lucide-react";
+import { Bot, Eraser, LockKeyhole, RefreshCw, Send, ShieldCheck, Sparkles, X } from "lucide-react";
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import type { AiConversationMessage, MeetFlowApi } from "./lib/meetflow-api";
 
-const welcomeMessage: AiConversationMessage = {
-  role: "assistant",
-  content: "Olá! Eu sou a MeetFlow IA. Posso ajudar com dúvidas, ideias, explicações, textos e muitos outros assuntos. O que você gostaria de conversar?",
-};
+function welcomeMessage(firstName: string): AiConversationMessage {
+  return {
+    role: "assistant",
+    content: `Olá, ${firstName}! Eu sou a MeetFlow IA. Pode conversar comigo normalmente: tire dúvidas, desenvolva ideias, revise textos ou peça uma explicação. Como posso ajudar?`,
+  };
+}
 
 export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firstName: string }) {
-  const [messages, setMessages] = useState<AiConversationMessage[]>([welcomeMessage]);
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState<AiConversationMessage[]>(() => [welcomeMessage(firstName)]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -20,12 +23,28 @@ export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firs
 
   useEffect(() => {
     scrollArea.current?.scrollTo({ top: scrollArea.current.scrollHeight, behavior: "smooth" });
-  }, [messages, busy]);
+  }, [messages, busy, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    window.requestAnimationFrame(() => inputArea.current?.focus());
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
 
   function clearConversation() {
-    setMessages([welcomeMessage]);
+    setMessages([welcomeMessage(firstName)]);
     setInput("");
     setError("");
+    setRemaining(null);
     window.requestAnimationFrame(() => inputArea.current?.focus());
   }
 
@@ -46,10 +65,13 @@ export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firs
   async function sendMessage() {
     const content = input.trim();
     if (!content || busy) return;
-    if (content.length > 4_000) { setError("Sua mensagem deve ter no máximo 4.000 caracteres."); return; }
+    if (content.length > 4_000) {
+      setError("Sua mensagem deve ter no máximo 4.000 caracteres.");
+      return;
+    }
 
     const userMessage: AiConversationMessage = { role: "user", content };
-    const temporaryContext = [...messages.filter((message) => message !== welcomeMessage), userMessage].slice(-12);
+    const temporaryContext = [...messages.slice(1), userMessage].slice(-12);
     setMessages((current) => [...current, userMessage]);
     setInput("");
     await requestAnswer(temporaryContext);
@@ -57,7 +79,7 @@ export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firs
 
   function retryAnswer() {
     if (busy) return;
-    const temporaryContext = messages.filter((message) => message !== welcomeMessage).slice(-12);
+    const temporaryContext = messages.slice(1).slice(-12);
     if (temporaryContext.at(-1)?.role === "user") void requestAnswer(temporaryContext);
   }
 
@@ -73,32 +95,44 @@ export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firs
     }
   }
 
-  const suggestions = ["Explique um assunto para mim", "Ajude a melhorar um texto", "Vamos desenvolver uma ideia"];
+  const suggestions = ["Explique um assunto", "Melhore um texto", "Desenvolva uma ideia"];
 
-  return <section className="ai-page">
-    <header className="ai-page-head">
-      <div><span className="section-kicker">ASSISTENTE PARTICULAR</span><h2>MeetFlow IA</h2><p>Converse naturalmente, tire dúvidas e desenvolva ideias sem criar um histórico permanente.</p></div>
-      <button className="button button-soft ai-clear" onClick={clearConversation} disabled={busy || messages.length === 1}><Eraser /> Limpar conversa</button>
-    </header>
+  return <>
+    <button className={`ai-fab${open ? " open" : ""}`} type="button" onClick={() => setOpen(true)} aria-label="Abrir conversa com a MeetFlow IA" aria-haspopup="dialog" aria-expanded={open}>
+      <span className="ai-fab-orbit" aria-hidden="true" />
+      <Sparkles aria-hidden="true" />
+      <small>IA</small>
+    </button>
 
-    <div className="ai-privacy-banner"><span><LockKeyhole /></span><div><strong>Conversa temporária e privada</strong><p>O MeetFlow não salva estas mensagens no banco. Ao atualizar a página, sair da conta ou limpar a conversa, o conteúdo desaparece.</p></div><ShieldCheck /></div>
+    {open && <div className="ai-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+      <section className="ai-dialog" role="dialog" aria-modal="true" aria-label="Conversa temporária com a MeetFlow IA" aria-busy={busy}>
+        <header className="ai-dialog-head">
+          <span className="ai-avatar"><Sparkles /></span>
+          <div><strong>MeetFlow IA</strong><small><i /> Online · conversa temporária</small></div>
+          {remaining !== null && <em>{remaining} restantes</em>}
+          <button className="ai-head-action" type="button" onClick={clearConversation} disabled={busy || messages.length === 1} aria-label="Limpar conversa" title="Limpar conversa"><Eraser /></button>
+          <button className="ai-head-action close" type="button" onClick={() => setOpen(false)} aria-label="Fechar conversa"><X /></button>
+        </header>
 
-    <article className="ai-chat-card" aria-busy={busy}>
-      <header><span className="ai-avatar"><Sparkles /></span><div><strong>MeetFlow IA</strong><small><i /> pronta para conversar com {firstName}</small></div>{remaining !== null && <em>{remaining} perguntas restantes hoje</em>}</header>
-      <div className="ai-messages" ref={scrollArea} role="log" aria-live="polite" aria-label="Conversa temporária com a MeetFlow IA">
-        {messages.map((message, index) => <div className={`ai-message ${message.role}`} key={`${message.role}-${index}`}>
-          <span>{message.role === "assistant" ? <Bot /> : firstName.slice(0, 1).toUpperCase()}</span>
-          <div><strong>{message.role === "assistant" ? "MeetFlow IA" : firstName}</strong><p>{message.content}</p></div>
-        </div>)}
-        {busy && <div className="ai-message assistant"><span><Bot /></span><div><strong>MeetFlow IA</strong><p className="ai-thinking"><i /><i /><i /></p></div></div>}
-      </div>
-      {messages.length === 1 && <div className="ai-suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => setInput(suggestion)}>{suggestion}</button>)}</div>}
-      {error && <div className="ai-error" role="alert"><span>{error}</span>{messages.at(-1)?.role === "user" && <button type="button" onClick={retryAnswer} disabled={busy}><RefreshCw /> Tentar novamente</button>}</div>}
-      <form className="ai-composer" onSubmit={submit}>
-        <div><textarea ref={inputArea} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={keyboardSend} maxLength={4_000} rows={1} placeholder="Converse com a MeetFlow IA..." aria-label="Mensagem para a MeetFlow IA" disabled={busy} /><small><span>Enter para enviar · Shift + Enter para nova linha</span><em>{input.length.toLocaleString("pt-BR")}/4.000</em></small></div>
-        <button type="submit" disabled={busy || !input.trim()} aria-label="Enviar para a IA"><Send /></button>
-      </form>
-      <footer>A IA pode cometer erros. Confirme informações importantes. Nenhuma mensagem desta conversa é adicionada ao chat da empresa.</footer>
-    </article>
-  </section>;
+        <div className="ai-privacy-note"><LockKeyhole /><p><strong>Privacidade por padrão.</strong> O MeetFlow não salva estas mensagens. O provedor recebe apenas o contexto temporário necessário para responder.</p><ShieldCheck /></div>
+
+        <div className="ai-messages" ref={scrollArea} role="log" aria-live="polite">
+          {messages.map((message, index) => <div className={`ai-message ${message.role}`} key={`${message.role}-${index}`}>
+            <span>{message.role === "assistant" ? <Bot /> : firstName.slice(0, 1).toUpperCase()}</span>
+            <div><strong>{message.role === "assistant" ? "MeetFlow IA" : firstName}</strong><p>{message.content}</p></div>
+          </div>)}
+          {busy && <div className="ai-message assistant"><span><Bot /></span><div><strong>MeetFlow IA</strong><p className="ai-thinking"><i /><i /><i /></p></div></div>}
+        </div>
+
+        {messages.length === 1 && <div className="ai-suggestions">{suggestions.map((suggestion) => <button type="button" key={suggestion} onClick={() => { setInput(suggestion); window.requestAnimationFrame(() => inputArea.current?.focus()); }}>{suggestion}</button>)}</div>}
+        {error && <div className="ai-error" role="alert"><span>{error}</span>{messages.at(-1)?.role === "user" && <button type="button" onClick={retryAnswer} disabled={busy}><RefreshCw /> Tentar novamente</button>}</div>}
+
+        <form className="ai-composer" onSubmit={submit}>
+          <div><textarea ref={inputArea} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={keyboardSend} maxLength={4_000} rows={1} placeholder="Converse com a MeetFlow IA..." aria-label="Mensagem para a MeetFlow IA" disabled={busy} /><small><span>Enter envia · Shift + Enter quebra a linha</span><em>{input.length.toLocaleString("pt-BR")}/4.000</em></small></div>
+          <button type="submit" disabled={busy || !input.trim()} aria-label="Enviar mensagem"><Send /></button>
+        </form>
+        <footer>A IA pode cometer erros. Confirme informações importantes.</footer>
+      </section>
+    </div>}
+  </>;
 }

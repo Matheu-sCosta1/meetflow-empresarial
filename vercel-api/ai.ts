@@ -13,7 +13,7 @@ const MAX_CONTEXT_MESSAGES = 12;
 const MAX_MESSAGE_CHARACTERS = 4_000;
 const MAX_CONTEXT_CHARACTERS = 16_000;
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_FREE_MODEL = "openai/gpt-oss-20b:free";
+const OPENROUTER_FREE_MODEL = "openrouter/free";
 const VERCEL_AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
 
@@ -73,7 +73,19 @@ function assistantText(payload: unknown) {
   const choices = (payload as { choices?: unknown }).choices;
   if (!Array.isArray(choices)) return "";
   const message = (choices[0] as { message?: { content?: unknown } } | undefined)?.message;
-  return typeof message?.content === "string" ? message.content.trim() : "";
+  if (typeof message?.content === "string") return message.content.trim();
+  if (Array.isArray(message?.content)) {
+    return message.content.map((part) => part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "").join("\n").trim();
+  }
+  return "";
+}
+
+function providerErrorCode(payload: unknown) {
+  if (!payload || typeof payload !== "object") return "unknown";
+  const error = (payload as { error?: unknown }).error;
+  if (!error || typeof error !== "object") return "unknown";
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" || typeof code === "number" ? String(code) : "unknown";
 }
 
 export function aiConfigured() {
@@ -158,7 +170,7 @@ export async function chatWithAi(request: ApiRequest, response: ApiResponse, use
           ...messages,
         ],
         temperature: 0.65,
-        max_completion_tokens: 900,
+        max_tokens: 900,
         ...(provider.kind === "gateway" ? {
           providerOptions: {
             gateway: {
@@ -169,8 +181,8 @@ export async function chatWithAi(request: ApiRequest, response: ApiResponse, use
         } : provider.kind === "openrouter" ? {
           provider: {
             data_collection: "deny",
-            zdr: true,
             allow_fallbacks: true,
+            sort: "throughput",
           },
         } : {}),
       }),
@@ -178,9 +190,12 @@ export async function chatWithAi(request: ApiRequest, response: ApiResponse, use
     });
 
     if (!providerResponse.ok) {
-      if (providerResponse.status === 429) throw new HttpError(503, "A cota gratuita da IA está temporariamente ocupada. Tente novamente em alguns minutos");
+      const providerError = await providerResponse.json().catch(() => null);
+      console.error("[MeetFlow IA] provider request failed", { provider: provider.kind, model: provider.model, status: providerResponse.status, code: providerErrorCode(providerError) });
+      if (providerResponse.status === 402 || providerResponse.status === 429) throw new HttpError(503, "A cota gratuita da IA está ocupada neste momento. Aguarde alguns minutos e tente novamente");
       if (providerResponse.status === 401 || providerResponse.status === 403) throw new HttpError(503, "A MeetFlow IA ainda não está configurada corretamente");
-      throw new HttpError(503, "A MeetFlow IA está temporariamente indisponível. Tente novamente em instantes");
+      if (providerResponse.status === 400) throw new HttpError(503, "O modelo gratuito não aceitou esta solicitação. Tente escrevê-la de outra forma");
+      throw new HttpError(503, "Os modelos gratuitos estão ocupados agora. Tente novamente em alguns instantes");
     }
 
     const message = assistantText(await providerResponse.json());
