@@ -12,6 +12,8 @@ const DEFAULT_MODEL = "openai/gpt-oss-20b";
 const MAX_CONTEXT_MESSAGES = 12;
 const MAX_MESSAGE_CHARACTERS = 4_000;
 const MAX_CONTEXT_CHARACTERS = 16_000;
+const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_FREE_MODEL = "openai/gpt-oss-20b:free";
 const VERCEL_AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
 
@@ -19,7 +21,7 @@ type AiProvider = {
   apiKey: string;
   model: string;
   url: string;
-  gateway: boolean;
+  kind: "openrouter" | "groq" | "gateway";
 };
 
 function dailyLimit() {
@@ -76,7 +78,8 @@ function assistantText(payload: unknown) {
 
 export function aiConfigured() {
   return Boolean(
-    process.env.AI_GATEWAY_API_KEY?.trim()
+    process.env.OPENROUTER_API_KEY?.trim()
+    || process.env.AI_GATEWAY_API_KEY?.trim()
     || process.env.VERCEL_OIDC_TOKEN?.trim()
     || process.env.VERCEL?.trim()
     || process.env.GROQ_API_KEY?.trim(),
@@ -89,6 +92,26 @@ function requestOidcToken(request: ApiRequest) {
 }
 
 function aiProvider(request: ApiRequest): AiProvider | null {
+  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (openRouterKey) {
+    return {
+      apiKey: openRouterKey,
+      model: process.env.OPENROUTER_MODEL?.trim() || OPENROUTER_FREE_MODEL,
+      url: OPENROUTER_CHAT_URL,
+      kind: "openrouter",
+    };
+  }
+
+  const groqKey = process.env.GROQ_API_KEY?.trim();
+  if (groqKey) {
+    return {
+      apiKey: groqKey,
+      model: process.env.GROQ_MODEL?.trim() || DEFAULT_MODEL,
+      url: GROQ_CHAT_URL,
+      kind: "groq",
+    };
+  }
+
   const gatewayKey = process.env.AI_GATEWAY_API_KEY?.trim()
     || process.env.VERCEL_OIDC_TOKEN?.trim()
     || requestOidcToken(request);
@@ -97,18 +120,10 @@ function aiProvider(request: ApiRequest): AiProvider | null {
       apiKey: gatewayKey,
       model: process.env.AI_GATEWAY_MODEL?.trim() || DEFAULT_MODEL,
       url: VERCEL_AI_GATEWAY_URL,
-      gateway: true,
+      kind: "gateway",
     };
   }
-
-  const groqKey = process.env.GROQ_API_KEY?.trim();
-  if (!groqKey) return null;
-  return {
-    apiKey: groqKey,
-    model: process.env.GROQ_MODEL?.trim() || DEFAULT_MODEL,
-    url: GROQ_CHAT_URL,
-    gateway: false,
-  };
+  return null;
 }
 
 export async function chatWithAi(request: ApiRequest, response: ApiResponse, user: AuthenticatedUser) {
@@ -128,6 +143,10 @@ export async function chatWithAi(request: ApiRequest, response: ApiResponse, use
       headers: {
         Authorization: `Bearer ${provider.apiKey}`,
         "Content-Type": "application/json",
+        ...(provider.kind === "openrouter" ? {
+          "HTTP-Referer": "https://meetflow-empresarial.vercel.app",
+          "X-Title": "MeetFlow IA",
+        } : {}),
       },
       body: JSON.stringify({
         model: provider.model,
@@ -140,12 +159,18 @@ export async function chatWithAi(request: ApiRequest, response: ApiResponse, use
         ],
         temperature: 0.65,
         max_completion_tokens: 900,
-        ...(provider.gateway ? {
+        ...(provider.kind === "gateway" ? {
           providerOptions: {
             gateway: {
               sort: "cost",
               zeroDataRetention: true,
             },
+          },
+        } : provider.kind === "openrouter" ? {
+          provider: {
+            data_collection: "deny",
+            zdr: true,
+            allow_fallbacks: true,
           },
         } : {}),
       }),

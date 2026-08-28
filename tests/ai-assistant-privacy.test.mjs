@@ -13,7 +13,7 @@ test("keeps the AI conversation only in temporary React memory", () => {
   assert.match(component, /Limpar conversa/);
   assert.match(component, /não salva estas mensagens no banco/);
   assert.doesNotMatch(component, /localStorage|sessionStorage|indexedDB/i);
-  assert.doesNotMatch(client, /GROQ_API_KEY|AI_GATEWAY_API_KEY|VERCEL_OIDC_TOKEN/);
+  assert.doesNotMatch(client, /OPENROUTER_API_KEY|GROQ_API_KEY|AI_GATEWAY_API_KEY|VERCEL_OIDC_TOKEN/);
 });
 
 test("sends AI requests through the authenticated server route", () => {
@@ -22,10 +22,23 @@ test("sends AI requests through the authenticated server route", () => {
   assert.match(ai, /process\.env\.VERCEL_OIDC_TOKEN/);
   assert.match(ai, /https:\/\/ai-gateway\.vercel\.sh\/v1\/chat\/completions/);
   assert.match(ai, /Authorization: `Bearer \$\{provider\.apiKey\}`/);
-  assert.doesNotMatch(component, /api\.groq\.com|ai-gateway\.vercel\.sh|GROQ_API_KEY|AI_GATEWAY_API_KEY/);
+  assert.doesNotMatch(component, /openrouter\.ai|api\.groq\.com|ai-gateway\.vercel\.sh|OPENROUTER_API_KEY|GROQ_API_KEY|AI_GATEWAY_API_KEY/);
 });
 
-test("uses the Vercel identity and requests zero-data-retention routing", () => {
+test("prefers the privacy-routed free OpenRouter model and keeps fallbacks", () => {
+  assert.match(ai, /process\.env\.OPENROUTER_API_KEY\?\.trim\(\)/);
+  assert.match(ai, /process\.env\.OPENROUTER_MODEL\?\.trim\(\)/);
+  assert.match(ai, /openai\/gpt-oss-20b:free/);
+  assert.match(ai, /https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
+  assert.match(ai, /data_collection: "deny"/);
+  assert.match(ai, /zdr: true/);
+  assert.ok(ai.indexOf("process.env.OPENROUTER_API_KEY?.trim()", ai.indexOf("function aiProvider"))
+    < ai.indexOf("process.env.GROQ_API_KEY?.trim()", ai.indexOf("function aiProvider")));
+  assert.match(ai, /process\.env\.GROQ_API_KEY\?\.trim\(\)/);
+  assert.match(ai, /process\.env\.GROQ_MODEL\?\.trim\(\)/);
+  assert.match(ai, /https:\/\/api\.groq\.com\/openai\/v1\/chat\/completions/);
+  assert.ok(ai.indexOf("process.env.GROQ_API_KEY?.trim()", ai.indexOf("function aiProvider"))
+    < ai.indexOf("process.env.AI_GATEWAY_API_KEY?.trim()", ai.indexOf("function aiProvider")));
   assert.match(ai, /process\.env\.AI_GATEWAY_API_KEY\?\.trim\(\)/);
   assert.match(ai, /process\.env\.VERCEL_OIDC_TOKEN\?\.trim\(\)/);
   assert.match(ai, /request\.headers\["x-vercel-oidc-token"\]/);
