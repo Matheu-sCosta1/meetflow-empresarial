@@ -31,6 +31,9 @@ export type Channel = {
   id: string;
   name: string;
   type: "GROUP" | "DIRECT";
+  accessMode: "ALL" | "SELECTED";
+  members: Array<{ id: string; name: string; avatarUrl?: string }>;
+  canManageMembers: boolean;
   unreadCount: number;
   lastMessageAt?: string;
   lastMessagePreview?: string;
@@ -93,7 +96,7 @@ export type AuditEvent = {
   createdAt: string;
 };
 export type AiConversationMessage = { role: "user" | "assistant"; content: string };
-export type AiChatResponse = { message: string; remaining: number; limit: number };
+export type AiChatResponse = { message: string; remaining: number; limit: number; sources: string[] };
 
 function defaultApiUrl() {
   const configured = process.env.NEXT_PUBLIC_API_URL?.trim();
@@ -156,8 +159,11 @@ export class MeetFlowApi {
   }
 
   channels() { return this.request<Channel[]>("/chat/channels"); }
-  createChannel(name: string) {
-    return this.request<Channel>("/chat/channels", { method: "POST", body: JSON.stringify({ name, type: "GROUP" }) });
+  createChannel(input: { name?: string; type: "GROUP" | "DIRECT"; memberIds: string[] }) {
+    return this.request<Channel>("/chat/channels", { method: "POST", body: JSON.stringify(input) });
+  }
+  updateChannelMembers(channelId: string, memberIds: string[]) {
+    return this.request<Channel>(`/chat/channels/${channelId}/members`, { method: "PATCH", body: JSON.stringify({ memberIds }) });
   }
   messages(channelId: string) { return this.request<ChatMessage[]>(`/chat/channels/${channelId}/messages`); }
   sendMessage(channelId: string, content: string, replyToId?: string) {

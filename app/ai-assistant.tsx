@@ -18,6 +18,7 @@ export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firs
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [remaining, setRemaining] = useState<number | null>(null);
+  const [sources, setSources] = useState<string[]>([]);
   const scrollArea = useRef<HTMLDivElement>(null);
   const inputArea = useRef<HTMLTextAreaElement>(null);
 
@@ -45,16 +46,19 @@ export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firs
     setInput("");
     setError("");
     setRemaining(null);
+    setSources([]);
     window.requestAnimationFrame(() => inputArea.current?.focus());
   }
 
   async function requestAnswer(temporaryContext: AiConversationMessage[]) {
     setError("");
+    setSources([]);
     setBusy(true);
     try {
       const answer = await api.askAi(temporaryContext);
       setMessages((current) => [...current, { role: "assistant", content: answer.message }]);
       setRemaining(answer.remaining);
+      setSources(answer.sources || []);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Não foi possível falar com a IA.");
     } finally {
@@ -95,7 +99,7 @@ export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firs
     }
   }
 
-  const suggestions = ["Explique um assunto", "Melhore um texto", "Desenvolva uma ideia"];
+  const suggestions = ["Quais são as próximas reuniões?", "Resuma os status da equipe", "Explique um assunto"];
 
   return <>
     <button className={`ai-fab${open ? " open" : ""}`} type="button" onClick={() => setOpen(true)} aria-label="Abrir conversa com a MeetFlow IA" aria-haspopup="dialog" aria-expanded={open}>
@@ -114,7 +118,7 @@ export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firs
           <button className="ai-head-action close" type="button" onClick={() => setOpen(false)} aria-label="Fechar conversa"><X /></button>
         </header>
 
-        <div className="ai-privacy-note"><LockKeyhole /><p><strong>Privacidade por padrão.</strong> O MeetFlow não salva estas mensagens. O provedor recebe apenas o contexto temporário necessário para responder.</p><ShieldCheck /></div>
+        <div className="ai-privacy-note"><LockKeyhole /><p><strong>Privacidade por padrão.</strong> O MeetFlow não salva estas mensagens. Quando você pergunta sobre a empresa, a IA consulta temporariamente apenas os dados que sua conta pode acessar.</p><ShieldCheck /></div>
 
         <div className="ai-messages" ref={scrollArea} role="log" aria-live="polite">
           {messages.map((message, index) => <div className={`ai-message ${message.role}`} key={`${message.role}-${index}`}>
@@ -125,6 +129,7 @@ export default function AiAssistant({ api, firstName }: { api: MeetFlowApi; firs
         </div>
 
         {messages.length === 1 && <div className="ai-suggestions">{suggestions.map((suggestion) => <button type="button" key={suggestion} onClick={() => { setInput(suggestion); window.requestAnimationFrame(() => inputArea.current?.focus()); }}>{suggestion}</button>)}</div>}
+        {sources.length > 0 && <div className="ai-context-sources"><ShieldCheck /><span><strong>Consulta interna protegida</strong>{sources.join(" · ")}</span></div>}
         {error && <div className="ai-error" role="alert"><span>{error}</span>{messages.at(-1)?.role === "user" && <button type="button" onClick={retryAnswer} disabled={busy}><RefreshCw /> Tentar novamente</button>}</div>}
 
         <form className="ai-composer" onSubmit={submit}>

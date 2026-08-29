@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ApiRequest, ApiResponse, UploadedFile } from "./http.js";
 import { assertAuthConfigured, authenticated, authenticationKey, hashPassword, mapUser, signToken, userByEmail, verifyPassword, type AuthenticatedUser, type UserRole } from "./auth.js";
-import { ensureSchema, query, transaction, type DbStatement } from "./db.js";
+import { ensureSchema, query, transaction, type DbStatement, type DbValue } from "./db.js";
 import { HttpError, empty, isEmail, json, jsonBody, multipart, optional, required } from "./http.js";
 import { chatChannel, notificationChannel, publishRealtime, realtimeConfigured, realtimeToken } from "./realtime.js";
 import { emailConfigured, sendPasswordResetEmail, sendTeamInvitationEmail, type MeetingEmailRecipient } from "./email.js";
@@ -166,8 +166,13 @@ function meetingView(row: QueryRow) {
 }
 
 function channelView(row: QueryRow) {
+  const rawMembers = Array.isArray(row.members) ? row.members : typeof row.members === "string" ? (() => { try { return JSON.parse(row.members) as unknown[]; } catch { return []; } })() : [];
+  const members = rawMembers.filter((member): member is Record<string, unknown> => Boolean(member) && typeof member === "object").map((member) => ({
+    id: String(member.id), name: String(member.name), avatarUrl: member.avatarUrl ? String(member.avatarUrl) : null,
+  }));
   return {
-    id: String(row.id), name: String(row.name), type: String(row.type), createdAt: iso(row.created_at),
+    id: String(row.id), name: String(row.display_name ?? row.name), type: String(row.type), createdAt: iso(row.created_at),
+    accessMode: String(row.access_mode ?? "ALL"), members, canManageMembers: Boolean(row.can_manage_members),
     unreadCount: Number(row.unread_count ?? 0),
     lastMessageAt: row.last_message_at ? iso(row.last_message_at) : null,
     lastMessagePreview: row.last_message_preview ? String(row.last_message_preview) : null,
@@ -512,8 +517,19 @@ async function cancelMeeting(request: ApiRequest, response: ApiResponse, organiz
   json(response, 200, meetingView((await meetingRows(organizationId, id))[0]));
 }
 
-async function listChannels(response: ApiResponse, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
-  const rows = await query<QueryRow>(`SELECT c.id, c.name, c.type, c.created_at,
+type ActiveUser = NonNullable<Awaited<ReturnType<typeof authenticated>>>;
+
+async function channelRows(user: ActiveUser, channelId?: string) {
+  const params: DbValue[] = [user.organizationId, user.id];
+  const channelFilter = channelId ? (params.push(channelId), `AND c.id = $${params.length}`) : "";
+  return await query<QueryRow>(`SELECT c.id, c.name, c.type, c.access_mode, c.created_by_id, c.created_at,
+    CASE WHEN c.type = 'DIRECT' THEN COALESCE((SELECT direct_user.name FROM chat_channel_members direct_member
+      JOIN users direct_user ON direct_user.id = direct_member.user_id
+      WHERE direct_member.channel_id = c.id AND direct_user.id <> $2 AND direct_user.active = TRUE LIMIT 1), c.name) ELSE c.name END AS display_name,
+    (c.created_by_id = $2 AND c.type = 'GROUP' AND c.access_mode = 'SELECTED') AS can_manage_members,
+    COALESCE((SELECT json_agg(json_build_object('id', member_user.id, 'name', member_user.name, 'avatarUrl', member_user.avatar_url) ORDER BY member_user.name)
+      FROM chat_channel_members membership JOIN users member_user ON member_user.id = membership.user_id
+      WHERE membership.channel_id = c.id AND member_user.active = TRUE), '[]'::json) AS members,
     COALESCE((SELECT COUNT(*) FROM chat_messages unread
       WHERE unread.channel_id = c.id AND unread.sender_id <> $2 AND unread.deleted_at IS NULL
       AND unread.created_at > COALESCE(r.last_read_at, TIMESTAMPTZ '1970-01-01')), 0) AS unread_count,
@@ -521,25 +537,96 @@ async function listChannels(response: ApiResponse, user: NonNullable<Awaited<Ret
     (SELECT CASE WHEN latest.deleted_at IS NULL THEN LEFT(latest.content, 120) ELSE 'Mensagem excluída' END
       FROM chat_messages latest WHERE latest.channel_id = c.id ORDER BY latest.created_at DESC LIMIT 1) AS last_message_preview
     FROM chat_channels c LEFT JOIN chat_channel_reads r ON r.channel_id = c.id AND r.user_id = $2
-    WHERE c.organization_id = $1 ORDER BY COALESCE((SELECT MAX(m.created_at) FROM chat_messages m WHERE m.channel_id = c.id), c.created_at) DESC`,
-  [user.organizationId, user.id]);
+    WHERE c.organization_id = $1
+      AND (c.access_mode = 'ALL' OR EXISTS (SELECT 1 FROM chat_channel_members access_member WHERE access_member.channel_id = c.id AND access_member.user_id = $2))
+      ${channelFilter}
+    ORDER BY COALESCE((SELECT MAX(m.created_at) FROM chat_messages m WHERE m.channel_id = c.id), c.created_at) DESC`, params);
+}
+
+async function listChannels(response: ApiResponse, user: ActiveUser) {
+  const rows = await channelRows(user);
   json(response, 200, rows.map(channelView));
 }
 
-async function createChannel(request: ApiRequest, response: ApiResponse, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
-  const body = await jsonBody<UnknownBody>(request);
-  const name = required(body.name, "Nome do canal", 100);
-  const type = body.type === "DIRECT" ? "DIRECT" : "GROUP";
-  const id = randomUUID();
-  const now = new Date().toISOString();
-  const rows = await query<QueryRow>(`INSERT INTO chat_channels(id, organization_id, created_by_id, name, type, created_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$6) RETURNING id, name, type, created_at`, [id, user.organizationId, user.id, name, type, now]);
-  json(response, 201, channelView(rows[0]));
+function channelMemberIds(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim()))];
 }
 
-async function channelForUser(channelId: string, organizationId: string) {
-  const rows = await query<QueryRow>(`SELECT id FROM chat_channels WHERE id = $1 AND organization_id = $2`, [channelId, organizationId]);
+async function activeOrganizationMembers(organizationId: string, memberIds: string[], excludedUserId: string) {
+  if (!memberIds.length) return [];
+  return await query<QueryRow>(`SELECT id, name FROM users WHERE organization_id = $1 AND active = TRUE AND id <> $3 AND id = ANY($2::uuid[])`,
+  [organizationId, memberIds, excludedUserId]);
+}
+
+async function createChannel(request: ApiRequest, response: ApiResponse, user: ActiveUser) {
+  const body = await jsonBody<UnknownBody>(request);
+  const type = body.type === "DIRECT" ? "DIRECT" : "GROUP";
+  const requestedMemberIds = channelMemberIds(body.memberIds).filter((id) => id !== user.id);
+  const selectedMembers = await activeOrganizationMembers(user.organizationId, requestedMemberIds, user.id);
+  if (selectedMembers.length !== requestedMemberIds.length) throw new HttpError(400, "Selecione somente colaboradores ativos da sua empresa");
+
+  if (type === "DIRECT") {
+    if (selectedMembers.length !== 1) throw new HttpError(400, "Escolha um colaborador para iniciar a conversa privada");
+    const targetId = String(selectedMembers[0].id);
+    const existing = await query<QueryRow>(`SELECT c.id FROM chat_channels c
+      WHERE c.organization_id = $1 AND c.type = 'DIRECT' AND c.access_mode = 'SELECTED'
+        AND EXISTS (SELECT 1 FROM chat_channel_members mine WHERE mine.channel_id = c.id AND mine.user_id = $2)
+        AND EXISTS (SELECT 1 FROM chat_channel_members theirs WHERE theirs.channel_id = c.id AND theirs.user_id = $3)
+        AND (SELECT COUNT(*) FROM chat_channel_members total WHERE total.channel_id = c.id) = 2
+      LIMIT 1`, [user.organizationId, user.id, targetId]);
+    if (existing[0]) return json(response, 200, channelView((await channelRows(user, String(existing[0].id)))[0]));
+
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await transaction([
+      { text: `INSERT INTO chat_channels(id, organization_id, created_by_id, name, type, access_mode, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,'DIRECT','SELECTED',$5,$5)`, params: [id, user.organizationId, user.id, String(selectedMembers[0].name), now] },
+      { text: `INSERT INTO chat_channel_members(channel_id, user_id, added_by_id, added_at) VALUES ($1,$2,$3,$4)`, params: [id, user.id, user.id, now] },
+      { text: `INSERT INTO chat_channel_members(channel_id, user_id, added_by_id, added_at) VALUES ($1,$2,$3,$4)`, params: [id, targetId, user.id, now] },
+    ]);
+    return json(response, 201, channelView((await channelRows(user, id))[0]));
+  }
+
+  const name = required(body.name, "Nome do grupo", 100);
+  if (!selectedMembers.length) throw new HttpError(400, "Escolha pelo menos um colaborador para o grupo");
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const memberIds = [user.id, ...selectedMembers.map((member) => String(member.id))];
+  await transaction([
+    { text: `INSERT INTO chat_channels(id, organization_id, created_by_id, name, type, access_mode, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,'GROUP','SELECTED',$5,$5)`, params: [id, user.organizationId, user.id, name, now] },
+    ...memberIds.map((memberId) => ({ text: `INSERT INTO chat_channel_members(channel_id, user_id, added_by_id, added_at) VALUES ($1,$2,$3,$4)`, params: [id, memberId, user.id, now] })),
+  ]);
+  json(response, 201, channelView((await channelRows(user, id))[0]));
+}
+
+async function channelForUser(channelId: string, user: ActiveUser) {
+  const rows = await query<QueryRow>(`SELECT c.id, c.type, c.access_mode, c.created_by_id FROM chat_channels c
+    WHERE c.id = $1 AND c.organization_id = $2
+      AND (c.access_mode = 'ALL' OR EXISTS (SELECT 1 FROM chat_channel_members member WHERE member.channel_id = c.id AND member.user_id = $3))`,
+  [channelId, user.organizationId, user.id]);
   if (!rows[0]) throw new HttpError(404, "Canal não encontrado");
+  return rows[0];
+}
+
+async function replaceChannelMembers(request: ApiRequest, response: ApiResponse, channelId: string, user: ActiveUser) {
+  const channel = await channelForUser(channelId, user);
+  if (channel.type !== "GROUP" || channel.access_mode !== "SELECTED") throw new HttpError(400, "Os participantes deste canal são automáticos");
+  if (String(channel.created_by_id) !== user.id) throw new HttpError(403, "Somente quem criou o grupo pode alterar os participantes");
+  const body = await jsonBody<UnknownBody>(request);
+  const requestedMemberIds = channelMemberIds(body.memberIds).filter((id) => id !== user.id);
+  const selectedMembers = await activeOrganizationMembers(user.organizationId, requestedMemberIds, user.id);
+  if (selectedMembers.length !== requestedMemberIds.length) throw new HttpError(400, "Selecione somente colaboradores ativos da sua empresa");
+  if (!selectedMembers.length) throw new HttpError(400, "Mantenha pelo menos um colaborador no grupo");
+  const now = new Date().toISOString();
+  const memberIds = [user.id, ...selectedMembers.map((member) => String(member.id))];
+  await transaction([
+    { text: `DELETE FROM chat_channel_members WHERE channel_id = $1`, params: [channelId] },
+    ...memberIds.map((memberId) => ({ text: `INSERT INTO chat_channel_members(channel_id, user_id, added_by_id, added_at) VALUES ($1,$2,$3,$4)`, params: [channelId, memberId, user.id, now] })),
+    { text: `UPDATE chat_channels SET updated_at = $1 WHERE id = $2`, params: [now, channelId] },
+  ]);
+  json(response, 200, channelView((await channelRows(user, channelId))[0]));
 }
 
 async function messageRows(channelId: string, organizationId: string, messageId?: string) {
@@ -556,8 +643,8 @@ async function messageRows(channelId: string, organizationId: string, messageId?
     WHERE m.channel_id = $1 ${messageFilter} ORDER BY m.created_at`, params);
 }
 
-async function listMessages(response: ApiResponse, channelId: string, organizationId: string) {
-  await channelForUser(channelId, organizationId);
+async function listMessages(response: ApiResponse, channelId: string, user: ActiveUser) {
+  await channelForUser(channelId, user);
   const rows = await query<QueryRow>(`SELECT * FROM (SELECT m.id, m.channel_id, m.sender_id, sender.name AS sender_name,
     m.content, m.message_type, m.attachment_url, m.created_at, m.updated_at, m.edited_at, m.deleted_at,
     m.reply_to_id, reply.content AS reply_content, reply.deleted_at AS reply_deleted_at, reply_sender.name AS reply_sender_name
@@ -568,7 +655,7 @@ async function listMessages(response: ApiResponse, channelId: string, organizati
 }
 
 async function createMessage(request: ApiRequest, response: ApiResponse, channelId: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
-  await channelForUser(channelId, user.organizationId);
+  await channelForUser(channelId, user);
   const body = await jsonBody<UnknownBody>(request);
   const content = required(body.content, "Mensagem", 4000);
   const replyToId = optional(body.replyToId, 100);
@@ -578,7 +665,10 @@ async function createMessage(request: ApiRequest, response: ApiResponse, channel
   }
   const id = randomUUID();
   const now = new Date().toISOString();
-  const recipients = await query<QueryRow>(`SELECT id FROM users WHERE organization_id = $1 AND active = TRUE AND id <> $2`, [user.organizationId, user.id]);
+  const recipients = await query<QueryRow>(`SELECT recipient.id FROM chat_channels c JOIN users recipient ON recipient.organization_id = c.organization_id
+    WHERE c.id = $1 AND c.organization_id = $2 AND recipient.active = TRUE AND recipient.id <> $3
+      AND (c.access_mode = 'ALL' OR EXISTS (SELECT 1 FROM chat_channel_members member WHERE member.channel_id = c.id AND member.user_id = recipient.id))`,
+  [channelId, user.organizationId, user.id]);
   const statements: DbStatement[] = [{
     text: `INSERT INTO chat_messages(id, channel_id, sender_id, content, message_type, reply_to_id, created_at, updated_at)
       VALUES ($1,$2,$3,$4,'TEXT',$5,$6,$6)`,
@@ -601,7 +691,7 @@ async function createMessage(request: ApiRequest, response: ApiResponse, channel
 }
 
 async function updateMessage(request: ApiRequest, response: ApiResponse, channelId: string, messageId: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
-  await channelForUser(channelId, user.organizationId);
+  await channelForUser(channelId, user);
   const body = await jsonBody<UnknownBody>(request);
   const content = required(body.content, "Mensagem", 4000);
   const now = new Date();
@@ -615,11 +705,12 @@ async function updateMessage(request: ApiRequest, response: ApiResponse, channel
 }
 
 async function deleteMessage(response: ApiResponse, channelId: string, messageId: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
-  await channelForUser(channelId, user.organizationId);
+  const channel = await channelForUser(channelId, user);
   const now = new Date();
   const rows = await query<QueryRow>(`UPDATE chat_messages SET content = 'Mensagem excluída', deleted_at = $1, updated_at = $1
-    WHERE id = $2 AND channel_id = $3 AND deleted_at IS NULL AND (sender_id = $4 OR $5 IN ('OWNER','ADMIN')) RETURNING id`,
-  [now, messageId, channelId, user.id, user.role]);
+    WHERE id = $2 AND channel_id = $3 AND deleted_at IS NULL
+      AND (sender_id = $4 OR ($5 IN ('OWNER','ADMIN') AND $6 <> 'DIRECT')) RETURNING id`,
+  [now, messageId, channelId, user.id, user.role, String(channel.type)]);
   if (!rows[0]) throw new HttpError(404, "Mensagem não encontrada ou sem permissão para excluir");
   const deleted = messageView((await messageRows(channelId, user.organizationId, messageId))[0]);
   await publishRealtime(chatChannel(user.organizationId, channelId), "chat.updated", { channelId, messageId, action: "deleted" });
@@ -627,7 +718,7 @@ async function deleteMessage(response: ApiResponse, channelId: string, messageId
 }
 
 async function markChannelRead(response: ApiResponse, channelId: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
-  await channelForUser(channelId, user.organizationId);
+  await channelForUser(channelId, user);
   await query(`INSERT INTO chat_channel_reads(channel_id, user_id, last_read_at) VALUES ($1,$2,$3)
     ON CONFLICT(channel_id, user_id) DO UPDATE SET last_read_at = EXCLUDED.last_read_at`, [channelId, user.id, new Date()]);
   empty(response);
@@ -937,7 +1028,11 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (method === "POST" && samePath(path, "ai", "chat")) return await chatWithAi(request, response, user);
     if (method === "GET" && samePath(path, "realtime", "config")) return json(response, 200, { enabled: realtimeConfigured() });
     if (method === "GET" && samePath(path, "realtime", "token")) {
-      const token = await realtimeToken(user);
+      const allowedChannels = await query<QueryRow>(`SELECT c.id FROM chat_channels c
+        WHERE c.organization_id = $1 AND (c.access_mode = 'ALL' OR EXISTS
+          (SELECT 1 FROM chat_channel_members member WHERE member.channel_id = c.id AND member.user_id = $2))`,
+      [user.organizationId, user.id]);
+      const token = await realtimeToken(user, allowedChannels.map((channel) => String(channel.id)));
       if (!token) throw new HttpError(503, "Tempo real ainda não configurado");
       return json(response, 200, token);
     }
@@ -946,7 +1041,8 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (samePath(path, "meetings", "*", "cancel") && method === "PATCH") return await cancelMeeting(request, response, user.organizationId, path[1]);
     if (samePath(path, "chat", "channels") && method === "GET") return await listChannels(response, user);
     if (samePath(path, "chat", "channels") && method === "POST") return await createChannel(request, response, user);
-    if (samePath(path, "chat", "channels", "*", "messages") && method === "GET") return await listMessages(response, path[2], user.organizationId);
+    if (samePath(path, "chat", "channels", "*", "members") && method === "PATCH") return await replaceChannelMembers(request, response, path[2], user);
+    if (samePath(path, "chat", "channels", "*", "messages") && method === "GET") return await listMessages(response, path[2], user);
     if (samePath(path, "chat", "channels", "*", "messages") && method === "POST") return await createMessage(request, response, path[2], user);
     if (samePath(path, "chat", "channels", "*", "messages", "*") && method === "PATCH") return await updateMessage(request, response, path[2], path[4], user);
     if (samePath(path, "chat", "channels", "*", "messages", "*") && method === "DELETE") return await deleteMessage(response, path[2], path[4], user);

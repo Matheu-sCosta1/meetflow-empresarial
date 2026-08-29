@@ -26,16 +26,19 @@ export function notificationChannel(organizationId: string, userId: string) {
   return `meetflow:${organizationId}:user:${userId}`;
 }
 
-export async function realtimeToken(user: AuthenticatedUser) {
+export async function realtimeToken(user: AuthenticatedUser, channelIds: string[]) {
   const rest = restClient();
   if (!rest) return null;
+  const capability: Record<string, string[]> = {
+    [notificationChannel(user.organizationId, user.id)]: ["subscribe"],
+  };
+  for (const channelId of channelIds) {
+    capability[chatChannel(user.organizationId, channelId)] = ["subscribe"];
+  }
   return await rest.auth.requestToken({
     clientId: user.id,
     ttl: 60 * 60 * 1000,
-    capability: JSON.stringify({
-      [`meetflow:${user.organizationId}:chat:*`]: ["subscribe"],
-      [notificationChannel(user.organizationId, user.id)]: ["subscribe"],
-    }),
+    capability: JSON.stringify(capability),
   });
 }
 

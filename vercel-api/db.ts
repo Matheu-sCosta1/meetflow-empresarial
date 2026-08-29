@@ -199,6 +199,15 @@ const schema = [
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
   )`,
+  `ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS access_mode VARCHAR(20) NOT NULL DEFAULT 'ALL'`,
+  `CREATE TABLE IF NOT EXISTS chat_channel_members (
+    channel_id UUID NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    added_by_id UUID NOT NULL REFERENCES users(id),
+    added_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY(channel_id, user_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_chat_channel_members_user ON chat_channel_members(user_id, channel_id)`,
   `CREATE TABLE IF NOT EXISTS chat_messages (
     id UUID PRIMARY KEY,
     channel_id UUID NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,

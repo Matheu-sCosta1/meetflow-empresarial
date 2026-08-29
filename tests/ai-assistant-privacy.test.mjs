@@ -58,6 +58,25 @@ test("stores only an aggregate daily quota and never AI message content", () => 
   assert.doesNotMatch(ai, /INSERT INTO (ai_messages|chat_messages)/i);
 });
 
+test("consults internal company data only within the authenticated authorization scope", () => {
+  assert.match(ai, /authorizedCompanyContext\(user/);
+  assert.match(ai, /meeting\.organization_id = \$1/);
+  assert.match(ai, /organization_id = \$1 ORDER BY active DESC/);
+  assert.match(ai, /status\.organization_id = \$1/);
+  assert.match(ai, /channel\.organization_id = \$1/);
+  assert.match(ai, /member\.user_id = \$2/);
+  assert.match(ai, /DADOS AUTORIZADOS DO MEETFLOW/);
+  assert.match(ai, /sources: companyContext\.sources/);
+  assert.doesNotMatch(ai, /password_hash|reset_token|invitation_token/i);
+  assert.match(component, /Consulta interna protegida/);
+});
+
+test("keeps general questions general and queries company context only when relevant", () => {
+  assert.match(ai, /if \(!wantsMeetings && !wantsTeam && !wantsStatuses && !wantsChat && !wantsProfile\) return \{ sources: \[\], content: "" \}/);
+  assert.match(component, /Quais são as próximas reuniões\?/);
+  assert.match(component, /Explique um assunto/);
+});
+
 test("protects the free quota and bounds temporary context", () => {
   assert.match(ai, /DEFAULT_DAILY_LIMIT = 20/);
   assert.match(ai, /MAX_CONTEXT_MESSAGES = 12/);
