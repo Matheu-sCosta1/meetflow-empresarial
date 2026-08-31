@@ -10,6 +10,7 @@ export type AuthenticatedUser = {
   role: UserRole;
   jobTitle: string;
   avatarUrl: string | null;
+  profilePhotoPromptedAt: string | null;
   organizationName: string;
   organizationSlug: string;
   authVersion: number;
@@ -25,6 +26,7 @@ type UserRow = {
   role: UserRole;
   job_title: string;
   avatar_url: string | null;
+  profile_photo_prompted_at: string | null;
   organization_name: string;
   organization_slug: string;
   auth_version: number;
@@ -82,7 +84,7 @@ export async function authenticated(headers: IncomingHttpHeaders) {
   const subject = tokenSubject(authorization.slice(7));
   if (!subject) return null;
   const rows = await query<UserRow>(`SELECT u.id, u.organization_id, u.name, u.email, u.role, u.job_title,
-    u.avatar_url, u.auth_version, o.name AS organization_name, o.slug AS organization_slug
+    u.avatar_url, u.profile_photo_prompted_at, u.auth_version, o.name AS organization_name, o.slug AS organization_slug
     FROM users u JOIN organizations o ON o.id = u.organization_id
     WHERE u.id = $1 AND u.active = TRUE`, [subject.userId]);
   return rows[0] && Number(rows[0].auth_version) === subject.authVersion ? mapUser(rows[0]) : null;
@@ -97,6 +99,7 @@ export function mapUser(row: UserRow): AuthenticatedUser {
     role: row.role,
     jobTitle: row.job_title,
     avatarUrl: row.avatar_url,
+    profilePhotoPromptedAt: row.profile_photo_prompted_at,
     organizationName: row.organization_name,
     organizationSlug: row.organization_slug,
     authVersion: Number(row.auth_version ?? 0),
@@ -105,7 +108,7 @@ export function mapUser(row: UserRow): AuthenticatedUser {
 
 export async function userByEmail(email: string) {
   const rows = await query<UserRow & { password_hash: string; active: boolean }>(`SELECT u.id, u.organization_id,
-    u.name, u.email, u.password_hash, u.role, u.job_title, u.avatar_url, u.active, u.auth_version,
+    u.name, u.email, u.password_hash, u.role, u.job_title, u.avatar_url, u.profile_photo_prompted_at, u.active, u.auth_version,
     o.name AS organization_name, o.slug AS organization_slug
     FROM users u JOIN organizations o ON o.id = u.organization_id WHERE LOWER(u.email) = LOWER($1)`, [email]);
   return rows[0];

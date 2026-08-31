@@ -198,7 +198,6 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
   const [showPassword, setShowPassword] = useState(false);
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
-  const [avatar, setAvatar] = useState<File>();
   const [dialog, setDialog] = useState<"recovery" | null>(null);
   const [resetToken, setResetToken] = useState(() => {
     if (typeof window === "undefined") return "";
@@ -222,7 +221,7 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
   ];
 
   function changeMode(next: "login" | "register") {
-    setMode(next); setError(""); setPassword(""); setConfirmation(""); setAvatar(undefined); setShowPassword(false);
+    setMode(next); setError(""); setPassword(""); setConfirmation(""); setShowPassword(false);
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -243,8 +242,7 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
           organizationName: String(form.get("organizationName")), acceptTerms: form.get("acceptTerms") === "on",
           termsVersion: TERMS_VERSION, privacyVersion: PRIVACY_VERSION,
         });
-        const user = avatar ? await meetFlowApi.authenticated(result.token).uploadAvatar(avatar).catch(() => result.user) : result.user;
-        onAuthenticated({ ...result, user, remember: true });
+        onAuthenticated({ ...result, remember: true });
       }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível continuar"); }
     finally { setBusy(false); }
@@ -266,7 +264,7 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
           {mode === "register" && <><div className="auth-form-section"><span>1</span><div><strong>Seus dados</strong><small>Perfil do administrador</small></div></div><div className="auth-field-grid"><label>Nome completo<div className="input-with-icon"><Users /><input name="name" required maxLength={120} autoComplete="name" placeholder="Seu nome completo" /></div></label><label>Cargo<div className="input-with-icon"><BriefcaseBusiness /><input name="jobTitle" required maxLength={120} placeholder="Ex.: Diretor comercial" /></div></label></div><div className="auth-form-section"><span>2</span><div><strong>Dados da empresa</strong><small>Workspace privado</small></div></div><label>Nome da empresa<div className="input-with-icon"><Building2 /><input name="organizationName" required maxLength={120} autoComplete="organization" placeholder="Nome da sua empresa" /></div></label></>}
           <label>E-mail profissional<div className="input-with-icon"><Mail /><input name="email" required type="email" autoComplete="email" inputMode="email" placeholder="voce@empresa.com" /></div></label>
           <div className={mode === "register" ? "auth-field-grid" : ""}><label>Senha<div className="input-with-icon"><LockKeyhole /><input name="password" required type={showPassword ? "text" : "password"} minLength={mode === "register" ? 10 : 8} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={mode === "login" ? "Digite sua senha" : "Crie uma senha forte"} /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff /> : <Eye />}</button></div></label>{mode === "register" && <label>Confirmar senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repita a senha" /></div></label>}</div>
-          {mode === "register" && <><div className="password-strength"><div><span style={{ width: `${passwordChecks.filter((item) => item.valid).length / passwordChecks.length * 100}%` }} /></div><small>{passwordChecks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><label className="avatar-register"><span className="avatar avatar-fallback">{avatar ? <ImagePlus /> : "MF"}</span><div><strong>Foto de perfil <em>opcional</em></strong><small>{avatar?.name ?? "JPG, PNG ou WebP, até 3,5 MB"}</small></div><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setAvatar(event.target.files?.[0])} /></label><LegalConsent /></>}
+          {mode === "register" && <><div className="password-strength"><div><span style={{ width: `${passwordChecks.filter((item) => item.valid).length / passwordChecks.length * 100}%` }} /></div><small>{passwordChecks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><LegalConsent /></>}
           {mode === "login" && <div className="login-options"><label className="auth-check"><input name="remember" type="checkbox" /><span>Manter conectado neste dispositivo</span></label><button type="button" onClick={() => setDialog("recovery")}>Esqueci minha senha</button></div>}
           <button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>{mode === "login" ? "Entrar no MeetFlow" : "Criar meu workspace"}<ArrowRight /></>}</button>
         </form>
@@ -559,6 +557,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
       </section>
       <nav className="mobile-nav"><button className={view === "inicio" ? "active" : ""} onClick={() => switchView("inicio")}><Home />Início</button><button className={view === "agenda" ? "active" : ""} onClick={() => switchView("agenda")}><CalendarDays />Agenda</button><span className="mobile-ai-slot" aria-hidden="true" /><button className={view === "chat" ? "active" : ""} onClick={() => switchView("chat")}><MessageCircle />Chat</button><button className={view === "configuracoes" ? "active" : ""} onClick={() => switchView("configuracoes")}><Settings />Ajustes</button></nav>
       <AiAssistant api={api} firstName={user.name.split(" ")[0] || "Você"} />
+      {!user.avatarUrl && !user.profilePhotoPromptedAt && <ProfilePhotoOnboarding user={user} api={api} onUser={replaceUser} onError={showError} />}
       {modal === "meeting" && <MeetingModal members={members.filter((member) => member.active)} onClose={() => setModal(null)} onSave={async (input) => { await api.createMeeting(input); setModal(null); await refresh(); }} onError={showError} />}
       {modal === "channel" && <ChannelModal members={members.filter((member) => member.active && !member.invitation && member.id !== user.id)} onClose={() => setModal(null)} onSave={async (input) => { const channel = await api.createChannel(input); setModal(null); await refresh(); setActiveChannel(channel.id); }} onError={showError} />}
       {channelToManage && <ChannelMembersModal channel={channelToManage} members={members.filter((member) => member.active && !member.invitation && member.id !== user.id)} onClose={() => setChannelToManage(null)} onSave={async (memberIds) => { const updated = await api.updateChannelMembers(channelToManage.id, memberIds); setChannels((current) => current.map((channel) => channel.id === updated.id ? updated : channel)); setChannelToManage(null); await refreshChannels(); }} onError={showError} />}
@@ -696,6 +695,50 @@ function ProfileSettings({ user, api, onUser, onLogout, onDelete, onError }: { u
   async function avatar(file?: File) { if (!file) return; try { onUser(await api.uploadAvatar(file)); } catch (reason) { onError(reason); } }
   async function password(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setPasswordSaved(false); const form = new FormData(event.currentTarget); try { await api.changePassword(String(form.get("currentPassword")), String(form.get("newPassword"))); event.currentTarget.reset(); setPasswordSaved(true); } catch (reason) { onError(reason); } }
   return <section className="subpage"><div className="page-head"><div><span className="section-kicker">SUA CONTA</span><h2>Configurações</h2><p>Atualize seus dados, foto e preferências de acesso.</p></div></div><div className="settings-layout"><nav><button className="active"><Users /> Perfil</button><button onClick={onLogout}><LogOut /> Sair da conta</button></nav><div className="settings-stack"><section className="panel settings-panel"><div className="panel-head"><div><span className="section-kicker">IDENTIDADE</span><h3>Perfil profissional</h3></div>{saved && <span className="save-success"><CheckCircle2 /> Salvo</span>}</div><div className="avatar-editor"><Avatar name={user.name} url={user.avatarUrl} api={api} /><label><ImagePlus /> Alterar foto<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void avatar(event.target.files?.[0])} /></label><span>JPG, PNG ou WebP, com até 3,5 MB na hospedagem gratuita.</span></div><form className="settings-form" onSubmit={update}><label>Nome completo<input name="name" required defaultValue={user.name} maxLength={120} /></label><label>Cargo<input name="jobTitle" required defaultValue={user.jobTitle} maxLength={120} /></label><label>E-mail<div className="readonly-input">{user.email}</div></label><label>Empresa<input name="organizationName" required defaultValue={user.organizationName} maxLength={120} readOnly={user.role !== "OWNER" && user.role !== "ADMIN"} /></label><div className="settings-actions"><button className="button button-primary">Salvar alterações</button><button type="button" className="button button-soft" onClick={onLogout}>Sair</button></div></form></section><section className="panel password-panel"><div className="panel-head"><div><span className="section-kicker">SEGURANÇA</span><h3>Alterar senha</h3></div>{passwordSaved && <span className="save-success"><CheckCircle2 /> Senha alterada</span>}</div><form onSubmit={password}><label>Senha atual<input name="currentPassword" type="password" required /></label><label>Nova senha<input name="newPassword" type="password" required minLength={10} placeholder="10 caracteres, maiúscula e número" /></label><button className="button button-dark">Atualizar senha</button></form></section><div className="danger-zone"><AlertTriangle /><div><strong>Excluir minha conta</strong><p>Desativa seu acesso permanentemente sem apagar o histórico empresarial.</p></div><button onClick={onDelete}>Excluir conta</button></div></div></div></section>;
+}
+
+function ProfilePhotoOnboarding({ user, api, onUser, onError }: { user: AuthUser; api: MeetFlowApi; onUser: (user: AuthUser) => void; onError: (reason: unknown) => void }) {
+  const [file, setFile] = useState<File>();
+  const [action, setAction] = useState<"upload" | "skip" | null>(null);
+  const [localError, setLocalError] = useState("");
+  const previewUrl = useMemo(() => file ? URL.createObjectURL(file) : "", [file]);
+  const busy = action !== null;
+
+  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
+
+  function choose(next?: File) {
+    setLocalError("");
+    if (!next) { setFile(undefined); return; }
+    if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(next.type.toLowerCase())) { setLocalError("Escolha uma imagem JPG, PNG ou WebP"); return; }
+    if (next.size > 3_500_000) { setLocalError(`A imagem tem ${fileSize(next.size)}. Escolha uma foto de até 3,5 MB.`); return; }
+    setFile(next);
+  }
+
+  async function upload() {
+    if (!file || busy) return;
+    setAction("upload"); setLocalError("");
+    try { onUser(await api.uploadAvatar(file)); }
+    catch (reason) { setLocalError(reason instanceof Error ? reason.message : "Não foi possível salvar a foto"); onError(reason); }
+    finally { setAction(null); }
+  }
+
+  async function skip() {
+    if (busy) return;
+    setAction("skip"); setLocalError("");
+    try { onUser(await api.dismissProfilePhotoPrompt()); }
+    catch (reason) { setLocalError(reason instanceof Error ? reason.message : "Não foi possível continuar"); onError(reason); }
+    finally { setAction(null); }
+  }
+
+  return <div className="profile-photo-backdrop"><section className="profile-photo-onboarding" role="dialog" aria-modal="true" aria-labelledby="profile-photo-title" aria-busy={busy}>
+    <div className="profile-photo-art"><span className="profile-photo-ring">{previewUrl ? <img src={previewUrl} alt="Prévia da foto escolhida" /> : <span>{initials(user.name)}</span>}<i><ImagePlus /></i></span><small>PERFIL PROFISSIONAL</small><strong>Sua equipe reconhecerá você mais rápido.</strong></div>
+    <div className="profile-photo-content"><span className="auth-secure"><ShieldCheck /> PRIMEIRO ACESSO</span><h2 id="profile-photo-title">Complete seu perfil, {user.name.split(" ")[0]}</h2><p>Adicione uma foto para personalizar sua presença no MeetFlow. Essa etapa é opcional e poderá ser feita depois nas configurações.</p>
+      <label className="profile-photo-picker"><ImagePlus /><span><strong>{file ? "Trocar foto escolhida" : "Escolher foto de perfil"}</strong><small>{file ? `${file.name} · ${fileSize(file.size)}` : "JPG, PNG ou WebP · até 3,5 MB"}</small></span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => choose(event.target.files?.[0])} /></label>
+      {localError && <div className="form-error modal-error"><AlertTriangle />{localError}</div>}
+      <div className="profile-photo-actions"><button type="button" className="button button-soft" onClick={() => void skip()} disabled={busy}>{action === "skip" && <Loader2 className="spin" />}Agora não</button><button type="button" className="button button-primary" onClick={() => void upload()} disabled={!file || busy}>{action === "upload" ? <Loader2 className="spin" /> : <Check />}Usar esta foto</button></div>
+      <small className="profile-photo-privacy"><LockKeyhole /> Sua foto fica vinculada somente ao seu perfil profissional.</small>
+    </div>
+  </section></div>;
 }
 
 function MeetingModal({ members, onClose, onSave, onError }: { members: TeamMember[]; onClose: () => void; onSave: (input: Record<string, unknown>) => Promise<void>; onError: (reason: unknown) => void }) {

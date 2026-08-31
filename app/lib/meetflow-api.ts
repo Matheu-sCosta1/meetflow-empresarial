@@ -7,6 +7,7 @@ export type AuthUser = {
   role: UserRole;
   jobTitle: string;
   avatarUrl?: string;
+  profilePhotoPromptedAt?: string | null;
   organizationId: string;
   organizationName: string;
   organizationSlug: string;
@@ -237,6 +238,10 @@ export class MeetFlowApi {
     const body = new FormData();
     body.append("file", file);
     return this.request<AuthUser>("/account/avatar", { method: "POST", body }, false);
+  }
+
+  dismissProfilePhotoPrompt() {
+    return this.request<AuthUser>("/account/profile-photo-prompt/dismiss", { method: "POST" });
   }
 
   deleteAccount() {

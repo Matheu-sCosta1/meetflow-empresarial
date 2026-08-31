@@ -32,6 +32,7 @@ function userView(user: AuthenticatedUser) {
     role: user.role,
     jobTitle: user.jobTitle,
     avatarUrl: user.avatarUrl,
+    profilePhotoPromptedAt: user.profilePhotoPromptedAt,
     organizationId: user.organizationId,
     organizationName: user.organizationName,
     organizationSlug: user.organizationSlug,
@@ -281,7 +282,7 @@ async function register(request: ApiRequest, response: ApiResponse) {
     statements.push({ text: `INSERT INTO availabilities(id, owner_id, day_of_week, start_time, end_time, timezone, active, created_at, updated_at)
       VALUES ($1,$2,$3,'09:00','18:00','America/Sao_Paulo',TRUE,$4,$4)`, params: [randomUUID(), userId, day, now] });
   }
-  const user = { id: userId, organizationId, name, email, role: "OWNER" as const, jobTitle, avatarUrl: null, organizationName, organizationSlug, authVersion: 0 };
+  const user = { id: userId, organizationId, name, email, role: "OWNER" as const, jobTitle, avatarUrl: null, profilePhotoPromptedAt: null, organizationName, organizationSlug, authVersion: 0 };
   const token = signToken(user, true);
   await transaction(statements);
   json(response, 201, { token, user: userView(user) });
@@ -419,7 +420,7 @@ async function acceptInvitation(request: ApiRequest, response: ApiResponse) {
 
   const user: AuthenticatedUser = {
     id: userId, organizationId, name: String(invite.name), email, role,
-    jobTitle: String(invite.job_title), avatarUrl: null,
+    jobTitle: String(invite.job_title), avatarUrl: null, profilePhotoPromptedAt: null,
     organizationName: String(invite.organization_name), organizationSlug: String(invite.organization_slug), authVersion: 0,
   };
   json(response, 201, { token: signToken(user, true), user: userView(user) });
@@ -939,7 +940,7 @@ async function listAuditEvents(response: ApiResponse, user: AuthenticatedUser) {
 }
 
 async function updatedUser(userId: string) {
-  const rows = await query<QueryRow>(`SELECT u.id, u.organization_id, u.name, u.email, u.role, u.job_title, u.avatar_url, u.auth_version,
+  const rows = await query<QueryRow>(`SELECT u.id, u.organization_id, u.name, u.email, u.role, u.job_title, u.avatar_url, u.profile_photo_prompted_at, u.auth_version,
     o.name AS organization_name, o.slug AS organization_slug FROM users u JOIN organizations o ON o.id = u.organization_id WHERE u.id = $1`, [userId]);
   return mapUser(rows[0] as Parameters<typeof mapUser>[0]);
 }
@@ -968,8 +969,13 @@ async function uploadAvatar(request: ApiRequest, response: ApiResponse, user: No
   await transaction([
     { text: `INSERT INTO media_objects(id, content_type, original_name, size_bytes, content, created_at, updated_at)
       VALUES ($1,$2,$3,$4,$5,$6,$6)`, params: [mediaId, file.mimeType, file.filename, file.content.length, file.content, now] },
-    { text: `UPDATE users SET avatar_url = $1, updated_at = $2 WHERE id = $3`, params: [mediaUrl, now, user.id] },
+    { text: `UPDATE users SET avatar_url = $1, profile_photo_prompted_at = $2, updated_at = $2 WHERE id = $3`, params: [mediaUrl, now, user.id] },
   ]);
+  json(response, 200, userView(await updatedUser(user.id)));
+}
+
+async function dismissProfilePhotoPrompt(response: ApiResponse, user: AuthenticatedUser) {
+  await query(`UPDATE users SET profile_photo_prompted_at = COALESCE(profile_photo_prompted_at, $1), updated_at = $1 WHERE id = $2`, [new Date(), user.id]);
   json(response, 200, userView(await updatedUser(user.id)));
 }
 
@@ -1062,6 +1068,7 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (samePath(path, "audit-logs") && method === "GET") return await listAuditEvents(response, user);
     if (samePath(path, "account", "profile") && method === "PATCH") return await updateProfile(request, response, user);
     if (samePath(path, "account", "avatar") && method === "POST") return await uploadAvatar(request, response, user);
+    if (samePath(path, "account", "profile-photo-prompt", "dismiss") && method === "POST") return await dismissProfilePhotoPrompt(response, user);
     if (samePath(path, "account", "password") && method === "PATCH") return await changePassword(request, response, user);
     if (samePath(path, "account") && method === "DELETE") return await deleteAccount(request, response, user);
     throw new HttpError(404, "Rota não encontrada");
