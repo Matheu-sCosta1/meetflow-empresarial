@@ -144,7 +144,7 @@ export function LegalDocumentPage({ kind }: { kind: LegalDocumentKind }) {
     <header className="legal-topbar">
       <button type="button" className="brand legal-home" onClick={() => window.location.assign("/")} aria-label="Voltar ao MeetFlow"><span className="brand-mark"><Sparkles /></span><span>MeetFlow<small>Central jurídica</small></span></button>
       <nav aria-label="Documentos jurídicos"><a href={legalDocumentUrl("terms")} className={terms ? "active" : ""}>Termos de Uso</a><a href={legalDocumentUrl("privacy")} className={!terms ? "active" : ""}>Privacidade</a></nav>
-      <button type="button" className="legal-print" onClick={() => window.print()}><Printer /> <span>Imprimir</span></button>
+      <button type="button" className="legal-print" onClick={() => window.print()} aria-label="Imprimir ou salvar documento em PDF" title="Imprimir ou salvar em PDF"><Printer /> <span>Imprimir</span></button>
     </header>
     <div className="legal-hero">
       <div className="legal-hero-inner">
