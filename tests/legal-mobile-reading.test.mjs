@@ -29,3 +29,11 @@ test("turns dense legal tables and consent controls into mobile components", () 
   assert.match(mobile, /\.legal-consent-documents\{grid-template-columns:1fr/);
   assert.match(mobile, /\.legal-checkmark\{width:22px;height:22px/);
 });
+
+test("makes document actions unmistakable on the dark mobile header", () => {
+  assert.match(legal, /aria-label="Imprimir ou salvar documento em PDF"/);
+  assert.match(mobile, /Mobile legal action contrast/);
+  assert.match(mobile, /button\.legal-print\{border:1px solid #e5ffae!important;background:linear-gradient/);
+  assert.match(mobile, /nav a\.active\{background:#f7fff2/);
+  assert.match(mobile, /\.legal-footer-print\{border-color:#bad5ae;background:#eef8e8/);
+});
