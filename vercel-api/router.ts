@@ -16,6 +16,8 @@ const VIDEO_TYPES = new Set(["video/mp4", "video/quicktime", "video/webm"]);
 const PASSWORD_RESET_EXPIRES_MINUTES = 60;
 const PASSWORD_RESET_RESPONSE = "Se este e-mail estiver cadastrado, você receberá um link para criar uma nova senha.";
 const TEAM_INVITATION_EXPIRES_DAYS = 7;
+const COMMUNITY_INVITATION_EXPIRES_DAYS = 7;
+const COMMUNITY_INVITATION_MAX_USES = 100;
 const TERMS_VERSION = "2026.08";
 const PRIVACY_VERSION = "2026.08";
 const MANAGED_ROLES = new Set<UserRole>(["ADMIN", "MANAGER", "MEMBER"]);
@@ -118,6 +120,10 @@ function invitationUrl(token: string) {
   return publicUrlWithHash({ invite_token: token });
 }
 
+function communityInvitationUrl(token: string) {
+  return publicUrlWithHash({ community_token: token });
+}
+
 async function enforceLoginRateLimit(key: string) {
   const rows = await query<QueryRow>(`SELECT blocked_until FROM auth_rate_limits WHERE key_hash = $1`, [key]);
   const blockedUntil = rows[0]?.blocked_until ? new Date(String(rows[0].blocked_until)) : null;
@@ -170,10 +176,13 @@ function channelView(row: QueryRow) {
   const rawMembers = Array.isArray(row.members) ? row.members : typeof row.members === "string" ? (() => { try { return JSON.parse(row.members) as unknown[]; } catch { return []; } })() : [];
   const members = rawMembers.filter((member): member is Record<string, unknown> => Boolean(member) && typeof member === "object").map((member) => ({
     id: String(member.id), name: String(member.name), avatarUrl: member.avatarUrl ? String(member.avatarUrl) : null,
+    organizationName: member.organizationName ? String(member.organizationName) : null,
   }));
   return {
     id: String(row.id), name: String(row.display_name ?? row.name), type: String(row.type), createdAt: iso(row.created_at),
-    accessMode: String(row.access_mode ?? "ALL"), members, canManageMembers: Boolean(row.can_manage_members),
+    accessMode: String(row.access_mode ?? "ALL"), scope: String(row.scope ?? "ORGANIZATION"), members,
+    canManageMembers: Boolean(row.can_manage_members), canInviteExternal: Boolean(row.can_invite_external),
+    canModerate: Boolean(row.can_moderate),
     unreadCount: Number(row.unread_count ?? 0),
     lastMessageAt: row.last_message_at ? iso(row.last_message_at) : null,
     lastMessagePreview: row.last_message_preview ? String(row.last_message_preview) : null,
@@ -183,7 +192,8 @@ function channelView(row: QueryRow) {
 function messageView(row: QueryRow) {
   return {
     id: String(row.id), channelId: String(row.channel_id), senderId: String(row.sender_id),
-    senderName: String(row.sender_name), content: String(row.content), messageType: String(row.message_type),
+    senderName: String(row.sender_name), senderOrganizationName: row.sender_organization_name ? String(row.sender_organization_name) : null,
+    content: String(row.content), messageType: String(row.message_type),
     attachmentUrl: row.attachment_url ? String(row.attachment_url) : null, createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at ?? row.created_at), editedAt: row.edited_at ? iso(row.edited_at) : null,
     deleted: Boolean(row.deleted_at), replyTo: row.reply_to_id ? {
@@ -521,15 +531,18 @@ async function cancelMeeting(request: ApiRequest, response: ApiResponse, organiz
 type ActiveUser = NonNullable<Awaited<ReturnType<typeof authenticated>>>;
 
 async function channelRows(user: ActiveUser, channelId?: string) {
-  const params: DbValue[] = [user.organizationId, user.id];
+  const params: DbValue[] = [user.organizationId, user.id, user.role];
   const channelFilter = channelId ? (params.push(channelId), `AND c.id = $${params.length}`) : "";
-  return await query<QueryRow>(`SELECT c.id, c.name, c.type, c.access_mode, c.created_by_id, c.created_at,
+  return await query<QueryRow>(`SELECT c.id, c.name, c.type, c.access_mode, c.scope, c.created_by_id, c.created_at,
     CASE WHEN c.type = 'DIRECT' THEN COALESCE((SELECT direct_user.name FROM chat_channel_members direct_member
       JOIN users direct_user ON direct_user.id = direct_member.user_id
       WHERE direct_member.channel_id = c.id AND direct_user.id <> $2 AND direct_user.active = TRUE LIMIT 1), c.name) ELSE c.name END AS display_name,
-    (c.created_by_id = $2 AND c.type = 'GROUP' AND c.access_mode = 'SELECTED') AS can_manage_members,
-    COALESCE((SELECT json_agg(json_build_object('id', member_user.id, 'name', member_user.name, 'avatarUrl', member_user.avatar_url) ORDER BY member_user.name)
+    (c.created_by_id = $2 AND c.scope = 'ORGANIZATION' AND c.type = 'GROUP' AND c.access_mode = 'SELECTED') AS can_manage_members,
+    (c.created_by_id = $2 AND c.scope = 'COMMUNITY') AS can_invite_external,
+    (c.created_by_id = $2 OR (c.scope = 'ORGANIZATION' AND $3 IN ('OWNER','ADMIN'))) AS can_moderate,
+    COALESCE((SELECT json_agg(json_build_object('id', member_user.id, 'name', member_user.name, 'avatarUrl', member_user.avatar_url, 'organizationName', member_org.name) ORDER BY member_user.name)
       FROM chat_channel_members membership JOIN users member_user ON member_user.id = membership.user_id
+      JOIN organizations member_org ON member_org.id = member_user.organization_id
       WHERE membership.channel_id = c.id AND member_user.active = TRUE), '[]'::json) AS members,
     COALESCE((SELECT COUNT(*) FROM chat_messages unread
       WHERE unread.channel_id = c.id AND unread.sender_id <> $2 AND unread.deleted_at IS NULL
@@ -538,8 +551,9 @@ async function channelRows(user: ActiveUser, channelId?: string) {
     (SELECT CASE WHEN latest.deleted_at IS NULL THEN LEFT(latest.content, 120) ELSE 'Mensagem excluída' END
       FROM chat_messages latest WHERE latest.channel_id = c.id ORDER BY latest.created_at DESC LIMIT 1) AS last_message_preview
     FROM chat_channels c LEFT JOIN chat_channel_reads r ON r.channel_id = c.id AND r.user_id = $2
-    WHERE c.organization_id = $1
-      AND (c.access_mode = 'ALL' OR EXISTS (SELECT 1 FROM chat_channel_members access_member WHERE access_member.channel_id = c.id AND access_member.user_id = $2))
+    WHERE ((c.scope = 'ORGANIZATION' AND c.organization_id = $1
+      AND (c.access_mode = 'ALL' OR EXISTS (SELECT 1 FROM chat_channel_members access_member WHERE access_member.channel_id = c.id AND access_member.user_id = $2)))
+      OR (c.scope = 'COMMUNITY' AND EXISTS (SELECT 1 FROM chat_channel_members community_member WHERE community_member.channel_id = c.id AND community_member.user_id = $2)))
       ${channelFilter}
     ORDER BY COALESCE((SELECT MAX(m.created_at) FROM chat_messages m WHERE m.channel_id = c.id), c.created_at) DESC`, params);
 }
@@ -562,7 +576,23 @@ async function activeOrganizationMembers(organizationId: string, memberIds: stri
 
 async function createChannel(request: ApiRequest, response: ApiResponse, user: ActiveUser) {
   const body = await jsonBody<UnknownBody>(request);
+  const community = body.type === "COMMUNITY";
   const type = body.type === "DIRECT" ? "DIRECT" : "GROUP";
+  const name = type === "GROUP" ? required(body.name, "Nome do grupo", 100) : "";
+
+  if (community) {
+    requireAdmin(user.role);
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await transaction([
+      { text: `INSERT INTO chat_channels(id, organization_id, created_by_id, name, type, access_mode, scope, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,'GROUP','SELECTED','COMMUNITY',$5,$5)`, params: [id, user.organizationId, user.id, name, now] },
+      { text: `INSERT INTO chat_channel_members(channel_id, user_id, added_by_id, added_at) VALUES ($1,$2,$3,$4)`, params: [id, user.id, user.id, now] },
+      auditStatement(user, "COMMUNITY_CHANNEL_CREATED", "CHAT_CHANNEL", id, { name }),
+    ]);
+    return json(response, 201, channelView((await channelRows(user, id))[0]));
+  }
+
   const requestedMemberIds = channelMemberIds(body.memberIds).filter((id) => id !== user.id);
   const selectedMembers = await activeOrganizationMembers(user.organizationId, requestedMemberIds, user.id);
   if (selectedMembers.length !== requestedMemberIds.length) throw new HttpError(400, "Selecione somente colaboradores ativos da sua empresa");
@@ -589,7 +619,6 @@ async function createChannel(request: ApiRequest, response: ApiResponse, user: A
     return json(response, 201, channelView((await channelRows(user, id))[0]));
   }
 
-  const name = required(body.name, "Nome do grupo", 100);
   if (!selectedMembers.length) throw new HttpError(400, "Escolha pelo menos um colaborador para o grupo");
   const id = randomUUID();
   const now = new Date().toISOString();
@@ -603,9 +632,10 @@ async function createChannel(request: ApiRequest, response: ApiResponse, user: A
 }
 
 async function channelForUser(channelId: string, user: ActiveUser) {
-  const rows = await query<QueryRow>(`SELECT c.id, c.type, c.access_mode, c.created_by_id FROM chat_channels c
-    WHERE c.id = $1 AND c.organization_id = $2
-      AND (c.access_mode = 'ALL' OR EXISTS (SELECT 1 FROM chat_channel_members member WHERE member.channel_id = c.id AND member.user_id = $3))`,
+  const rows = await query<QueryRow>(`SELECT c.id, c.type, c.access_mode, c.scope, c.organization_id, c.created_by_id FROM chat_channels c
+    WHERE c.id = $1 AND ((c.scope = 'ORGANIZATION' AND c.organization_id = $2
+      AND (c.access_mode = 'ALL' OR EXISTS (SELECT 1 FROM chat_channel_members member WHERE member.channel_id = c.id AND member.user_id = $3)))
+      OR (c.scope = 'COMMUNITY' AND EXISTS (SELECT 1 FROM chat_channel_members community_member WHERE community_member.channel_id = c.id AND community_member.user_id = $3)))`,
   [channelId, user.organizationId, user.id]);
   if (!rows[0]) throw new HttpError(404, "Canal não encontrado");
   return rows[0];
@@ -613,6 +643,7 @@ async function channelForUser(channelId: string, user: ActiveUser) {
 
 async function replaceChannelMembers(request: ApiRequest, response: ApiResponse, channelId: string, user: ActiveUser) {
   const channel = await channelForUser(channelId, user);
+  if (channel.scope === "COMMUNITY") throw new HttpError(400, "Os participantes deste grupo entram pelo link compartilhado");
   if (channel.type !== "GROUP" || channel.access_mode !== "SELECTED") throw new HttpError(400, "Os participantes deste canal são automáticos");
   if (String(channel.created_by_id) !== user.id) throw new HttpError(403, "Somente quem criou o grupo pode alterar os participantes");
   const body = await jsonBody<UnknownBody>(request);
@@ -630,15 +661,67 @@ async function replaceChannelMembers(request: ApiRequest, response: ApiResponse,
   json(response, 200, channelView((await channelRows(user, channelId))[0]));
 }
 
-async function messageRows(channelId: string, organizationId: string, messageId?: string) {
-  const params: string[] = [channelId, organizationId];
+async function createCommunityInvitation(response: ApiResponse, channelId: string, user: ActiveUser) {
+  const channel = await channelForUser(channelId, user);
+  if (channel.scope !== "COMMUNITY") throw new HttpError(400, "Este canal não é um grupo entre empresas");
+  if (String(channel.created_by_id) !== user.id) throw new HttpError(403, "Somente quem criou o grupo pode compartilhar o link");
+  const rawToken = randomBytes(32).toString("base64url");
+  const id = randomUUID();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + COMMUNITY_INVITATION_EXPIRES_DAYS * 86400000);
+  await transaction([
+    { text: `UPDATE chat_channel_invitations SET revoked_at = $1, updated_at = $1
+      WHERE channel_id = $2 AND revoked_at IS NULL AND expires_at > $1`, params: [now, channelId] },
+    { text: `INSERT INTO chat_channel_invitations(id, channel_id, created_by_id, token_hash, expires_at, max_uses, use_count, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,0,$7,$7)`, params: [id, channelId, user.id, secureTokenHash(rawToken), expiresAt, COMMUNITY_INVITATION_MAX_USES, now] },
+    auditStatement(user, "COMMUNITY_INVITATION_CREATED", "CHAT_CHANNEL", channelId, { expiresAt: expiresAt.toISOString(), maxUses: COMMUNITY_INVITATION_MAX_USES }),
+  ]);
+  json(response, 201, {
+    id,
+    url: communityInvitationUrl(rawToken),
+    expiresAt: expiresAt.toISOString(),
+    maxUses: COMMUNITY_INVITATION_MAX_USES,
+  });
+}
+
+async function acceptCommunityInvitation(request: ApiRequest, response: ApiResponse, user: ActiveUser) {
+  const body = await jsonBody<UnknownBody>(request);
+  const token = required(body.token, "Link do grupo", 500);
+  const tokenHash = secureTokenHash(token);
+  const now = new Date();
+  const invitation = await query<QueryRow>(`SELECT invitation.id, invitation.channel_id, channel.organization_id
+    FROM chat_channel_invitations invitation
+    JOIN chat_channels channel ON channel.id = invitation.channel_id AND channel.scope = 'COMMUNITY'
+    WHERE invitation.token_hash = $1 AND invitation.revoked_at IS NULL AND invitation.expires_at > $2`, [tokenHash, now]);
+  if (!invitation[0]) throw new HttpError(404, "Este link de grupo é inválido ou expirou");
+  const channelId = String(invitation[0].channel_id);
+  const existing = await query<QueryRow>(`SELECT channel_id FROM chat_channel_members WHERE channel_id = $1 AND user_id = $2`, [channelId, user.id]);
+  if (!existing[0]) {
+    const joined = await query<QueryRow>(`WITH claimed AS (
+      UPDATE chat_channel_invitations SET use_count = use_count + 1, updated_at = $1
+      WHERE id = $2 AND token_hash = $3 AND revoked_at IS NULL AND expires_at > $1 AND use_count < max_uses
+      RETURNING channel_id
+    )
+    INSERT INTO chat_channel_members(channel_id, user_id, added_by_id, added_at)
+    SELECT channel_id, $4, $4, $1 FROM claimed
+    ON CONFLICT(channel_id, user_id) DO NOTHING RETURNING channel_id`, [now, String(invitation[0].id), tokenHash, user.id]);
+    if (!joined[0]) throw new HttpError(409, "Este grupo atingiu o limite de participantes");
+    await query(`INSERT INTO audit_events(id, organization_id, actor_user_id, action, target_type, target_id, metadata, created_at)
+      VALUES ($1,$2,$3,'COMMUNITY_INVITATION_ACCEPTED','CHAT_CHANNEL',$4,$5::jsonb,$6)`,
+    [randomUUID(), String(invitation[0].organization_id), user.id, channelId, JSON.stringify({ organizationName: user.organizationName, name: user.name }), now]);
+  }
+  json(response, 200, channelView((await channelRows(user, channelId))[0]));
+}
+
+async function messageRows(channelId: string, messageId?: string) {
+  const params: string[] = [channelId];
   const messageFilter = messageId ? (params.push(messageId), `AND m.id = $${params.length}`) : "";
-  return await query<QueryRow>(`SELECT m.id, m.channel_id, m.sender_id, sender.name AS sender_name,
+  return await query<QueryRow>(`SELECT m.id, m.channel_id, m.sender_id, sender.name AS sender_name, sender_org.name AS sender_organization_name,
     m.content, m.message_type, m.attachment_url, m.created_at, m.updated_at, m.edited_at, m.deleted_at,
     m.reply_to_id, reply.content AS reply_content, reply.deleted_at AS reply_deleted_at, reply_sender.name AS reply_sender_name
     FROM chat_messages m
-    JOIN chat_channels c ON c.id = m.channel_id AND c.organization_id = $2
     JOIN users sender ON sender.id = m.sender_id
+    JOIN organizations sender_org ON sender_org.id = sender.organization_id
     LEFT JOIN chat_messages reply ON reply.id = m.reply_to_id
     LEFT JOIN users reply_sender ON reply_sender.id = reply.sender_id
     WHERE m.channel_id = $1 ${messageFilter} ORDER BY m.created_at`, params);
@@ -646,10 +729,10 @@ async function messageRows(channelId: string, organizationId: string, messageId?
 
 async function listMessages(response: ApiResponse, channelId: string, user: ActiveUser) {
   await channelForUser(channelId, user);
-  const rows = await query<QueryRow>(`SELECT * FROM (SELECT m.id, m.channel_id, m.sender_id, sender.name AS sender_name,
+  const rows = await query<QueryRow>(`SELECT * FROM (SELECT m.id, m.channel_id, m.sender_id, sender.name AS sender_name, sender_org.name AS sender_organization_name,
     m.content, m.message_type, m.attachment_url, m.created_at, m.updated_at, m.edited_at, m.deleted_at,
     m.reply_to_id, reply.content AS reply_content, reply.deleted_at AS reply_deleted_at, reply_sender.name AS reply_sender_name
-    FROM chat_messages m JOIN users sender ON sender.id = m.sender_id
+    FROM chat_messages m JOIN users sender ON sender.id = m.sender_id JOIN organizations sender_org ON sender_org.id = sender.organization_id
     LEFT JOIN chat_messages reply ON reply.id = m.reply_to_id LEFT JOIN users reply_sender ON reply_sender.id = reply.sender_id
     WHERE m.channel_id = $1 ORDER BY m.created_at DESC LIMIT 200) recent ORDER BY created_at`, [channelId]);
   json(response, 200, rows.map(messageView));
@@ -666,10 +749,12 @@ async function createMessage(request: ApiRequest, response: ApiResponse, channel
   }
   const id = randomUUID();
   const now = new Date().toISOString();
-  const recipients = await query<QueryRow>(`SELECT recipient.id FROM chat_channels c JOIN users recipient ON recipient.organization_id = c.organization_id
-    WHERE c.id = $1 AND c.organization_id = $2 AND recipient.active = TRUE AND recipient.id <> $3
-      AND (c.access_mode = 'ALL' OR EXISTS (SELECT 1 FROM chat_channel_members member WHERE member.channel_id = c.id AND member.user_id = recipient.id))`,
-  [channelId, user.organizationId, user.id]);
+  const recipients = await query<QueryRow>(`SELECT recipient.id, recipient.organization_id FROM chat_channels c JOIN users recipient ON recipient.active = TRUE
+    WHERE c.id = $1 AND recipient.id <> $2 AND (
+      (c.scope = 'ORGANIZATION' AND recipient.organization_id = c.organization_id
+        AND (c.access_mode = 'ALL' OR EXISTS (SELECT 1 FROM chat_channel_members member WHERE member.channel_id = c.id AND member.user_id = recipient.id)))
+      OR (c.scope = 'COMMUNITY' AND EXISTS (SELECT 1 FROM chat_channel_members community_member WHERE community_member.channel_id = c.id AND community_member.user_id = recipient.id)))`,
+  [channelId, user.id]);
   const statements: DbStatement[] = [{
     text: `INSERT INTO chat_messages(id, channel_id, sender_id, content, message_type, reply_to_id, created_at, updated_at)
       VALUES ($1,$2,$3,$4,'TEXT',$5,$6,$6)`,
@@ -679,13 +764,13 @@ async function createMessage(request: ApiRequest, response: ApiResponse, channel
   recipients.forEach((recipient, index) => statements.push({
     text: `INSERT INTO notifications(id, organization_id, user_id, type, title, body, link, created_at)
       VALUES ($1,$2,$3,'CHAT_MESSAGE',$4,$5,$6,$7)`,
-    params: [notificationIds[index], user.organizationId, String(recipient.id), `Nova mensagem de ${user.name}`, content.slice(0, 180), `chat:${channelId}`, now],
+    params: [notificationIds[index], String(recipient.organization_id), String(recipient.id), `Nova mensagem de ${user.name}`, content.slice(0, 180), `chat:${channelId}`, now],
   }));
   await transaction(statements);
-  const created = messageView((await messageRows(channelId, user.organizationId, id))[0]);
-  await publishRealtime(chatChannel(user.organizationId, channelId), "chat.updated", { channelId, messageId: id, action: "created" });
+  const created = messageView((await messageRows(channelId, id))[0]);
+  await publishRealtime(chatChannel(channelId), "chat.updated", { channelId, messageId: id, action: "created" });
   await Promise.all(recipients.map((recipient, index) => publishRealtime(
-    notificationChannel(user.organizationId, String(recipient.id)), "notification.created",
+    notificationChannel(String(recipient.organization_id), String(recipient.id)), "notification.created",
     { id: notificationIds[index], type: "CHAT_MESSAGE" },
   )));
   json(response, 201, created);
@@ -700,21 +785,22 @@ async function updateMessage(request: ApiRequest, response: ApiResponse, channel
     WHERE id = $3 AND channel_id = $4 AND sender_id = $5 AND deleted_at IS NULL RETURNING id`,
   [content, now, messageId, channelId, user.id]);
   if (!rows[0]) throw new HttpError(404, "Mensagem não encontrada ou sem permissão para editar");
-  const updated = messageView((await messageRows(channelId, user.organizationId, messageId))[0]);
-  await publishRealtime(chatChannel(user.organizationId, channelId), "chat.updated", { channelId, messageId, action: "updated" });
+  const updated = messageView((await messageRows(channelId, messageId))[0]);
+  await publishRealtime(chatChannel(channelId), "chat.updated", { channelId, messageId, action: "updated" });
   json(response, 200, updated);
 }
 
 async function deleteMessage(response: ApiResponse, channelId: string, messageId: string, user: NonNullable<Awaited<ReturnType<typeof authenticated>>>) {
   const channel = await channelForUser(channelId, user);
   const now = new Date();
+  const canModerate = String(channel.created_by_id) === user.id || (channel.scope === "ORGANIZATION" && (user.role === "OWNER" || user.role === "ADMIN"));
   const rows = await query<QueryRow>(`UPDATE chat_messages SET content = 'Mensagem excluída', deleted_at = $1, updated_at = $1
     WHERE id = $2 AND channel_id = $3 AND deleted_at IS NULL
-      AND (sender_id = $4 OR ($5 IN ('OWNER','ADMIN') AND $6 <> 'DIRECT')) RETURNING id`,
-  [now, messageId, channelId, user.id, user.role, String(channel.type)]);
+      AND (sender_id = $4 OR ($5 = TRUE AND $6 <> 'DIRECT')) RETURNING id`,
+  [now, messageId, channelId, user.id, canModerate, String(channel.type)]);
   if (!rows[0]) throw new HttpError(404, "Mensagem não encontrada ou sem permissão para excluir");
-  const deleted = messageView((await messageRows(channelId, user.organizationId, messageId))[0]);
-  await publishRealtime(chatChannel(user.organizationId, channelId), "chat.updated", { channelId, messageId, action: "deleted" });
+  const deleted = messageView((await messageRows(channelId, messageId))[0]);
+  await publishRealtime(chatChannel(channelId), "chat.updated", { channelId, messageId, action: "deleted" });
   json(response, 200, deleted);
 }
 
@@ -1035,8 +1121,10 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (method === "GET" && samePath(path, "realtime", "config")) return json(response, 200, { enabled: realtimeConfigured() });
     if (method === "GET" && samePath(path, "realtime", "token")) {
       const allowedChannels = await query<QueryRow>(`SELECT c.id FROM chat_channels c
-        WHERE c.organization_id = $1 AND (c.access_mode = 'ALL' OR EXISTS
-          (SELECT 1 FROM chat_channel_members member WHERE member.channel_id = c.id AND member.user_id = $2))`,
+        WHERE ((c.scope = 'ORGANIZATION' AND c.organization_id = $1 AND (c.access_mode = 'ALL' OR EXISTS
+          (SELECT 1 FROM chat_channel_members member WHERE member.channel_id = c.id AND member.user_id = $2)))
+          OR (c.scope = 'COMMUNITY' AND EXISTS
+          (SELECT 1 FROM chat_channel_members community_member WHERE community_member.channel_id = c.id AND community_member.user_id = $2)))`,
       [user.organizationId, user.id]);
       const token = await realtimeToken(user, allowedChannels.map((channel) => String(channel.id)));
       if (!token) throw new HttpError(503, "Tempo real ainda não configurado");
@@ -1047,6 +1135,8 @@ export async function route(request: ApiRequest, response: ApiResponse, path: st
     if (samePath(path, "meetings", "*", "cancel") && method === "PATCH") return await cancelMeeting(request, response, user.organizationId, path[1]);
     if (samePath(path, "chat", "channels") && method === "GET") return await listChannels(response, user);
     if (samePath(path, "chat", "channels") && method === "POST") return await createChannel(request, response, user);
+    if (samePath(path, "chat", "channels", "*", "invite") && method === "POST") return await createCommunityInvitation(response, path[2], user);
+    if (samePath(path, "chat", "community-invitations", "accept") && method === "POST") return await acceptCommunityInvitation(request, response, user);
     if (samePath(path, "chat", "channels", "*", "members") && method === "PATCH") return await replaceChannelMembers(request, response, path[2], user);
     if (samePath(path, "chat", "channels", "*", "messages") && method === "GET") return await listMessages(response, path[2], user);
     if (samePath(path, "chat", "channels", "*", "messages") && method === "POST") return await createMessage(request, response, path[2], user);
