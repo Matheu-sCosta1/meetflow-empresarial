@@ -2,10 +2,10 @@
 /* eslint-disable @next/next/no-img-element */
 
 import {
-  AlertTriangle, ArrowRight, BriefcaseBusiness, Building2, CalendarDays, Check, Copy,
+  AlertTriangle, ArrowLeft, ArrowRight, BriefcaseBusiness, Building2, CalendarDays, Check, Copy,
   Bell, CheckCheck, CheckCircle2, ChevronRight, Clock3, CornerUpLeft, Eye, EyeOff, Hash, Home, ImagePlus, Loader2,
   History, LockKeyhole, LogOut, Mail, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck,
-  Globe2, Link2, Sparkles, Pencil, RefreshCw, Share2, Trash2, UserPlus, Users, Video, Wifi, WifiOff, X,
+  Globe2, Link2, Search, Sparkles, Pencil, RefreshCw, Share2, Trash2, UserPlus, Users, Video, Wifi, WifiOff, X,
 } from "lucide-react";
 import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -388,9 +388,13 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
   const [channelToManage, setChannelToManage] = useState<Channel | null>(null);
   const [channelToShare, setChannelToShare] = useState<Channel | null>(null);
   const communityJoinAttempted = useRef(false);
+  const activeChannelRef = useRef(activeChannel);
+  const viewRef = useRef(view);
   const canManageTeam = user.role === "OWNER" || user.role === "ADMIN";
 
   const showError = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : "Algo deu errado"), []);
+  useEffect(() => { activeChannelRef.current = activeChannel; }, [activeChannel]);
+  useEffect(() => { viewRef.current = view; }, [view]);
   const refresh = useCallback(async () => {
     const from = new Date(Date.now() - 30 * 86400000).toISOString();
     const to = new Date(Date.now() + 365 * 86400000).toISOString();
@@ -446,8 +450,8 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
   const markChannelRead = useCallback(async (channelId: string) => {
     if (!channelId) return;
     await api.markChannelRead(channelId);
-    await refreshChannels();
-  }, [api, refreshChannels]);
+    setChannels((current) => current.map((channel) => channel.id === channelId ? { ...channel, unreadCount: 0 } : channel));
+  }, [api]);
 
   useEffect(() => { const timer = window.setTimeout(() => void refresh(), 0); return () => window.clearTimeout(timer); }, [refresh]);
   useEffect(() => {
@@ -470,8 +474,10 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
     void load();
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void load(true);
-    }, realtimeState === "live" ? 30000 : 5000);
-    return () => { alive = false; window.clearInterval(timer); };
+    }, realtimeState === "live" ? 30000 : 2500);
+    const visible = () => { if (document.visibilityState === "visible") void load(true); };
+    document.addEventListener("visibilitychange", visible);
+    return () => { alive = false; window.clearInterval(timer); document.removeEventListener("visibilitychange", visible); };
   }, [activeChannel, api, markChannelRead, realtimeState, showError, view]);
 
   const channelIds = channels.map((channel) => channel.id).join("|");
@@ -490,7 +496,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
           const listener = () => {
             if (!alive) return;
             void refreshChannels().catch(() => undefined);
-            if (view === "chat" && activeChannel === channel.id) {
+            if (viewRef.current === "chat" && activeChannelRef.current === channel.id) {
               void api.messages(channel.id).then((next) => {
                 if (alive) setMessages(Array.isArray(next) ? next : []);
               }).catch(() => undefined);
@@ -520,7 +526,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
     return () => { alive = false; cleanup(); };
   // A string estável evita reconectar quando apenas contadores e prévias mudam.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeChannel, api, channelIds, markChannelRead, refreshChannels, refreshNotifications, user.id, user.organizationId, view]);
+  }, [api, channelIds, markChannelRead, refreshChannels, refreshNotifications, user.id, user.organizationId]);
 
   function switchView(next: View) {
     setView(next);
@@ -554,6 +560,39 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
     }
   }
 
+  async function sendChatMessage(content: string, replyToId?: string) {
+    const channelId = activeChannelRef.current;
+    if (!channelId) throw new Error("Selecione uma conversa");
+    const now = new Date().toISOString();
+    const reply = replyToId ? messages.find((message) => message.id === replyToId) : undefined;
+    const pendingId = `pending-${user.id}-${Date.now()}`;
+    const pending: ChatMessage = {
+      id: pendingId,
+      channelId,
+      senderId: user.id,
+      senderName: user.name,
+      senderOrganizationName: user.organizationName,
+      content,
+      messageType: "TEXT",
+      replyTo: reply ? { id: reply.id, senderName: reply.senderName, content: reply.content, deleted: reply.deleted } : undefined,
+      deleted: false,
+      createdAt: now,
+      updatedAt: now,
+      deliveryState: "SENDING",
+    };
+    setMessages((current) => [...current, pending]);
+    try {
+      const sent = await api.sendMessage(channelId, content, replyToId);
+      if (activeChannelRef.current === channelId) {
+        setMessages((current) => current.map((message) => message.id === pendingId ? sent : message));
+      }
+      await markChannelRead(channelId);
+    } catch (reason) {
+      if (activeChannelRef.current === channelId) setMessages((current) => current.filter((message) => message.id !== pendingId));
+      throw reason;
+    }
+  }
+
   if (loading) return <Loading label="Carregando dados reais" />;
   return (
     <main className="app-shell">
@@ -572,7 +611,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
           <div className="content page-enter">
             {view === "inicio" && <Overview user={user} meetings={activeMeetings} channels={channels} statuses={statuses} members={members} onNavigate={switchView} onMeeting={() => setModal("meeting")} onStatus={() => setModal("status")} onStory={setStory} />}
             {view === "agenda" && <Agenda meetings={meetings} onCreate={() => setModal("meeting")} onCancel={async (meeting) => { const reason = window.prompt("Motivo do cancelamento:", "Reunião cancelada pela equipe"); if (!reason) return; try { await api.cancelMeeting(meeting.id, reason); await refresh(); } catch (cause) { showError(cause); } }} />}
-            {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={(id) => { setMessages([]); setActiveChannel(id); }} messages={messages} loading={messagesLoading} user={user} api={api} realtimeState={realtimeState} onNewChannel={() => setModal("channel")} onManageChannel={setChannelToManage} onShareChannel={setChannelToShare} onRefresh={async () => { setMessagesLoading(true); try { setMessages(await api.messages(activeChannel)); await markChannelRead(activeChannel); } finally { setMessagesLoading(false); } }} onSend={async (content, replyToId) => { const sent = await api.sendMessage(activeChannel, content, replyToId); setMessages((current) => current.some((message) => message.id === sent.id) ? current : [...current, sent]); await markChannelRead(activeChannel); }} onEdit={async (messageId, content) => { const updated = await api.editMessage(activeChannel, messageId, content); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onDelete={async (messageId) => { const updated = await api.deleteMessage(activeChannel, messageId); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onError={showError} />}
+            {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={(id) => { setMessages([]); setActiveChannel(id); }} messages={messages} loading={messagesLoading} user={user} api={api} realtimeState={realtimeState} onNewChannel={() => setModal("channel")} onManageChannel={setChannelToManage} onShareChannel={setChannelToShare} onRefresh={async () => { setMessagesLoading(true); try { setMessages(await api.messages(activeChannel)); await markChannelRead(activeChannel); } finally { setMessagesLoading(false); } }} onSend={sendChatMessage} onEdit={async (messageId, content) => { const updated = await api.editMessage(activeChannel, messageId, content); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onDelete={async (messageId) => { const updated = await api.deleteMessage(activeChannel, messageId); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onError={showError} />}
             {view === "status" && <Statuses statuses={statuses} api={api} user={user} onCreate={() => setModal("status")} onStory={setStory} onDelete={async (id) => { try { await api.deleteStatus(id); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "equipe" && <Team members={members} auditEvents={auditEvents} api={api} currentUserId={user.id} currentUserRole={user.role} canManage={canManageTeam} onAdd={() => setModal("member")} onRemove={async (id) => { if (!window.confirm("Desativar o acesso deste colaborador?")) return; try { await api.removeMember(id); await refresh(); } catch (cause) { showError(cause); } }} onRole={async (id, role) => { try { await api.changeMemberRole(id, role); await refresh(); } catch (cause) { showError(cause); } }} onResend={async (id) => { try { await api.resendInvitation(id); await refresh(); } catch (cause) { showError(cause); await refresh(); } }} onRevoke={async (id) => { if (!window.confirm("Cancelar este convite? O link enviado deixará de funcionar.")) return; try { await api.revokeInvitation(id); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "configuracoes" && <ProfileSettings user={user} api={api} onUser={replaceUser} onLogout={logout} onDelete={() => setModal("delete")} onError={showError} />}
@@ -619,11 +658,16 @@ function Chat({ channels, activeChannel, onChannel, messages, loading, user, api
   const [sending, setSending] = useState(false);
   const [replying, setReplying] = useState<ChatMessage | null>(null);
   const [editing, setEditing] = useState<ChatMessage | null>(null);
+  const [query, setQuery] = useState("");
+  const [mobileRoomOpen, setMobileRoomOpen] = useState(Boolean(activeChannel));
   const endRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const current = channels.find((channel) => channel.id === activeChannel);
-  const groupChannels = channels.filter((channel) => channel.type === "GROUP");
-  const directChannels = channels.filter((channel) => channel.type === "DIRECT");
+  const normalizedQuery = query.trim().toLocaleLowerCase("pt-BR");
+  const visibleChannels = normalizedQuery ? channels.filter((channel) => channel.name.toLocaleLowerCase("pt-BR").includes(normalizedQuery)) : channels;
+  const organizationChannels = visibleChannels.filter((channel) => channel.type === "GROUP" && channel.scope !== "COMMUNITY");
+  const communityChannels = visibleChannels.filter((channel) => channel.type === "GROUP" && channel.scope === "COMMUNITY");
+  const directChannels = visibleChannels.filter((channel) => channel.type === "DIRECT");
   useEffect(() => {
     const list = messageListRef.current;
     if (list) list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
@@ -636,7 +680,12 @@ function Chat({ channels, activeChannel, onChannel, messages, loading, user, api
     setSending(true);
     try {
       if (editing) await onEdit(editing.id, value);
-      else await onSend(value, replying?.id);
+      else {
+        const replyId = replying?.id;
+        setContent("");
+        setReplying(null);
+        await onSend(value, replyId);
+      }
       setContent("");
       setEditing(null);
       setReplying(null);
@@ -665,26 +714,29 @@ function Chat({ channels, activeChannel, onChannel, messages, loading, user, api
 
   function channelButton(channel: Channel) {
     const privateConversation = channel.type === "DIRECT";
-    return <button key={channel.id} className={`conversation${activeChannel === channel.id ? " active" : ""}`} onClick={() => onChannel(channel.id)}>
+    return <button key={channel.id} className={`conversation${activeChannel === channel.id ? " active" : ""}`} onClick={() => { onChannel(channel.id); setMobileRoomOpen(true); }}>
       <span className={`channel-avatar${privateConversation ? " direct" : ""}${channel.scope === "COMMUNITY" ? " community" : ""}`}>{privateConversation ? <LockKeyhole /> : channel.scope === "COMMUNITY" ? <Globe2 /> : <Hash />}</span>
       <div><strong>{channel.name}</strong><small>{channel.lastMessagePreview || (privateConversation ? "Conversa privada" : channel.scope === "COMMUNITY" ? `${channel.members.length} participantes · entre empresas` : channel.accessMode === "ALL" ? "Todos da empresa" : `${channel.members.length} participantes`)}</small></div>
       {channel.unreadCount > 0 && <em className="unread-badge">{channel.unreadCount > 99 ? "99+" : channel.unreadCount}</em>}
     </button>;
   }
 
-  return <section className="chat-shell">
+  return <section className={`chat-shell${mobileRoomOpen ? " mobile-chat-room-open" : ""}`}>
     <aside className="conversation-list">
       <header><div><span className="section-kicker">CONVERSAS</span><h2>Mensagens <small>{channels.length}</small></h2></div><button className="icon-button" onClick={onNewChannel} title="Nova conversa" aria-label="Criar grupo ou conversa privada"><Plus /></button></header>
+      <div className="chat-search"><Search /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar conversa" aria-label="Buscar conversa" />{query && <button type="button" onClick={() => setQuery("")} aria-label="Limpar busca"><X /></button>}</div>
       <div className="conversation-scroll">
-        {groupChannels.length > 0 && <><span className="conversation-label">CANAIS E GRUPOS</span>{groupChannels.map(channelButton)}</>}
+        {communityChannels.length > 0 && <><span className="conversation-label">ENTRE EMPRESAS</span>{communityChannels.map(channelButton)}</>}
+        {organizationChannels.length > 0 && <><span className="conversation-label">SUA EMPRESA</span>{organizationChannels.map(channelButton)}</>}
         {directChannels.length > 0 && <><span className="conversation-label">CONVERSAS PRIVADAS</span>{directChannels.map(channelButton)}</>}
+        {!visibleChannels.length && <div className="chat-search-empty"><Search /><span>Nenhuma conversa encontrada</span></div>}
       </div>
     </aside>
     <article className="chat-room">
-      <header><div><span className={`channel-avatar${current?.type === "DIRECT" ? " direct" : ""}${current?.scope === "COMMUNITY" ? " community" : ""}`}>{current?.type === "DIRECT" ? <LockKeyhole /> : current?.scope === "COMMUNITY" ? <Globe2 /> : <Hash />}</span><div><strong>{current?.name ?? "Selecione uma conversa"}</strong><small className={`chat-sync ${realtimeState}`}>{current?.type === "DIRECT" ? <><LockKeyhole /> somente vocês dois</> : current?.scope === "COMMUNITY" ? <><Globe2 /> {current.members.length} pessoas de diferentes empresas</> : current?.accessMode === "ALL" ? <><Users /> todos os colaboradores ativos</> : <><Users /> {current?.members.length ?? 0} participantes</>}</small></div></div><div className="chat-head-actions">{current?.canInviteExternal && <button className="chat-share" onClick={() => onShareChannel(current)} title="Compartilhar grupo" aria-label="Compartilhar grupo"><Share2 /><span>Convidar</span></button>}{current?.canManageMembers && <button className="chat-refresh" onClick={() => onManageChannel(current)} title="Gerenciar participantes" aria-label="Gerenciar participantes"><Settings /></button>}<button className="chat-refresh" onClick={() => void onRefresh().catch(onError)} disabled={loading || !current} title={realtimeState === "live" ? "Atualizar agora · conectado em tempo real" : "Atualizar mensagens · sincronização automática"} aria-label="Atualizar mensagens"><RefreshCw className={loading ? "spin" : ""} /></button></div></header>
+      <header><div><button className="chat-mobile-back" onClick={() => setMobileRoomOpen(false)} aria-label="Voltar para conversas"><ArrowLeft /></button><span className={`channel-avatar${current?.type === "DIRECT" ? " direct" : ""}${current?.scope === "COMMUNITY" ? " community" : ""}`}>{current?.type === "DIRECT" ? <LockKeyhole /> : current?.scope === "COMMUNITY" ? <Globe2 /> : <Hash />}</span><div><strong>{current?.name ?? "Selecione uma conversa"}</strong><small className={`chat-sync ${realtimeState}`}>{current?.type === "DIRECT" ? <><LockKeyhole /> somente vocês dois</> : current?.scope === "COMMUNITY" ? <><Globe2 /> {current.members.length} pessoas de diferentes empresas</> : current?.accessMode === "ALL" ? <><Users /> todos os colaboradores ativos</> : <><Users /> {current?.members.length ?? 0} participantes</>}</small></div></div><div className="chat-head-actions">{current?.canInviteExternal && <button className="chat-share" onClick={() => onShareChannel(current)} title="Compartilhar grupo" aria-label="Compartilhar grupo"><Share2 /><span>Convidar</span></button>}{current?.canManageMembers && <button className="chat-refresh" onClick={() => onManageChannel(current)} title="Gerenciar participantes" aria-label="Gerenciar participantes"><Settings /></button>}<button className="chat-refresh" onClick={() => void onRefresh().catch(onError)} disabled={loading || !current} title={realtimeState === "live" ? "Atualizar agora · conectado em tempo real" : "Atualizar mensagens · sincronização automática"} aria-label="Atualizar mensagens"><RefreshCw className={loading ? "spin" : ""} /></button></div></header>
       <div className="messages" ref={messageListRef}><div className="day-divider"><span>{loading ? "Atualizando" : "Mensagens"}</span></div>{messages.length ? messages.map((message) => {
-        const canManage = !message.deleted && (message.senderId === user.id || Boolean(current?.canModerate));
-        return <div key={message.id} className={`message-row${message.senderId === user.id ? " own" : ""}${message.deleted ? " deleted" : ""}`}><Avatar name={message.senderName} api={api} small /><div className="message-content"><span><strong>{message.senderName}</strong>{current?.scope === "COMMUNITY" && message.senderOrganizationName && <small className="message-company">{message.senderOrganizationName}</small>}<time>{formatTime(message.createdAt)}</time>{message.editedAt && !message.deleted && <small>editada</small>}</span><div className="message-bubble">{message.replyTo && <div className="reply-quote"><CornerUpLeft /><span><strong>{message.replyTo.senderName}</strong>{message.replyTo.deleted ? "Mensagem removida" : message.replyTo.content}</span></div>}<p>{message.deleted ? "Esta mensagem foi removida." : message.content}</p>{!message.deleted && <div className="message-actions"><button onClick={() => beginReply(message)} title="Responder" aria-label="Responder"><CornerUpLeft /></button>{message.senderId === user.id && <button onClick={() => beginEdit(message)} title="Editar" aria-label="Editar"><Pencil /></button>}{canManage && <button onClick={() => void remove(message)} title="Excluir" aria-label="Excluir"><Trash2 /></button>}</div>}</div></div></div>;
+        const canManage = !message.deleted && !message.deliveryState && (message.senderId === user.id || Boolean(current?.canModerate));
+        return <div key={message.id} className={`message-row${message.senderId === user.id ? " own" : ""}${message.deleted ? " deleted" : ""}${message.deliveryState === "SENDING" ? " sending" : ""}`}><Avatar name={message.senderName} api={api} small /><div className="message-content"><span><strong>{message.senderName}</strong>{current?.scope === "COMMUNITY" && message.senderOrganizationName && <small className="message-company">{message.senderOrganizationName}</small>}<time>{formatTime(message.createdAt)}</time>{message.deliveryState === "SENDING" && <small className="message-delivery"><Loader2 className="spin" /> enviando</small>}{message.editedAt && !message.deleted && <small>editada</small>}</span><div className="message-bubble">{message.replyTo && <div className="reply-quote"><CornerUpLeft /><span><strong>{message.replyTo.senderName}</strong>{message.replyTo.deleted ? "Mensagem removida" : message.replyTo.content}</span></div>}<p>{message.deleted ? "Esta mensagem foi removida." : message.content}</p>{!message.deleted && !message.deliveryState && <div className="message-actions"><button onClick={() => beginReply(message)} title="Responder" aria-label="Responder"><CornerUpLeft /></button>{message.senderId === user.id && <button onClick={() => beginEdit(message)} title="Editar" aria-label="Editar"><Pencil /></button>}{canManage && <button onClick={() => void remove(message)} title="Excluir" aria-label="Excluir"><Trash2 /></button>}</div>}</div></div></div>;
       }) : !loading && <Empty icon={current?.type === "DIRECT" ? LockKeyhole : MessageCircle} title="Comece a conversa" text={current?.type === "DIRECT" ? "Somente vocês dois podem ler e responder aqui." : "As mensagens aparecerão somente para os participantes deste canal."} />}<div ref={endRef} /></div>
       <div className="composer-area">{(replying || editing) && <div className={`composer-context${editing ? " editing" : ""}`}><span>{editing ? <Pencil /> : <CornerUpLeft />}</span><div><strong>{editing ? "Editando sua mensagem" : `Respondendo a ${replying?.senderName}`}</strong><small>{editing?.content || replying?.content}</small></div><button onClick={() => { setEditing(null); setReplying(null); setContent(""); }} aria-label="Cancelar"><X /></button></div>}<form className="composer" onSubmit={send}><textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && (replying || editing)) { setReplying(null); setEditing(null); setContent(""); } else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder={editing ? "Edite sua mensagem" : current?.type === "DIRECT" ? `Mensagem para ${current.name}` : `Mensagem em #${current?.name ?? "canal"}`} disabled={!current || sending} aria-label="Escrever mensagem" /><span>{content.length}/4000</span><button className="send-button" aria-label={editing ? "Salvar edição" : "Enviar mensagem"} disabled={!content.trim() || sending}>{sending ? <Loader2 className="spin" /> : editing ? <Check /> : <Send />}</button></form></div>
     </article>
