@@ -58,6 +58,7 @@ export type ChatMessage = {
   deleted: boolean;
   createdAt: string;
   updatedAt: string;
+  deliveryState?: "SENDING";
 };
 export type AppNotification = {
   id: string;
