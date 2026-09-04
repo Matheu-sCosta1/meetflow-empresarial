@@ -18,8 +18,8 @@ export function realtimeConfigured() {
   return Boolean(apiKey());
 }
 
-export function chatChannel(organizationId: string, channelId: string) {
-  return `meetflow:${organizationId}:chat:${channelId}`;
+export function chatChannel(channelId: string) {
+  return `meetflow:chat:${channelId}`;
 }
 
 export function notificationChannel(organizationId: string, userId: string) {
@@ -33,7 +33,7 @@ export async function realtimeToken(user: AuthenticatedUser, channelIds: string[
     [notificationChannel(user.organizationId, user.id)]: ["subscribe"],
   };
   for (const channelId of channelIds) {
-    capability[chatChannel(user.organizationId, channelId)] = ["subscribe"];
+    capability[chatChannel(channelId)] = ["subscribe"];
   }
   return await rest.auth.requestToken({
     clientId: user.id,
