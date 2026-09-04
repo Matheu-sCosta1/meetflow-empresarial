@@ -2,10 +2,10 @@
 /* eslint-disable @next/next/no-img-element */
 
 import {
-  AlertTriangle, ArrowRight, BriefcaseBusiness, Building2, CalendarDays, Check,
+  AlertTriangle, ArrowRight, BriefcaseBusiness, Building2, CalendarDays, Check, Copy,
   Bell, CheckCheck, CheckCircle2, ChevronRight, Clock3, CornerUpLeft, Eye, EyeOff, Hash, Home, ImagePlus, Loader2,
   History, LockKeyhole, LogOut, Mail, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck,
-  Sparkles, Pencil, RefreshCw, Trash2, UserPlus, Users, Video, Wifi, WifiOff, X,
+  Globe2, Link2, Sparkles, Pencil, RefreshCw, Share2, Trash2, UserPlus, Users, Video, Wifi, WifiOff, X,
 } from "lucide-react";
 import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -207,6 +207,10 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
     if (typeof window === "undefined") return "";
     return new URLSearchParams(window.location.hash.replace(/^#/, "")).get("invite_token") ?? "";
   });
+  const [communityToken] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.hash.replace(/^#/, "")).get("community_token") ?? "";
+  });
 
   useEffect(() => {
     if ((resetToken || inviteToken) && window.location.hash) {
@@ -258,6 +262,7 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
       <section className="local-auth-card">
         {inviteToken ? <InvitationAcceptForm token={inviteToken} onAuthenticated={(result) => onAuthenticated({ ...result, remember: true })} onBack={() => { setInviteToken(""); changeMode("login"); }} /> : resetToken ? <PasswordResetForm token={resetToken} onBack={() => { setResetToken(""); changeMode("login"); }} /> : <>
         <div className="auth-tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => changeMode("login")}>Entrar</button><button type="button" role="tab" aria-selected={mode === "register"} className={mode === "register" ? "active" : ""} onClick={() => changeMode("register")}>Criar empresa</button></div>
+        {communityToken && <div className="community-auth-notice"><span><Globe2 /></span><div><strong>Convite para um grupo entre empresas</strong><p>Entre na sua conta ou crie sua empresa. Depois, você será adicionado ao grupo sem compartilhar os dados internos do seu workspace.</p></div></div>}
         <div className="auth-heading"><span className="auth-secure"><LockKeyhole /> ACESSO SEGURO</span><h2>{mode === "login" ? "Bem-vindo de volta" : "Crie seu workspace"}</h2><p>{mode === "login" ? "Use os dados cadastrados para acessar sua empresa." : "Configure sua conta de administrador em poucos passos."}</p></div>
         {error && <div className="form-error">{error}</div>}
         <form className={`auth-form auth-form-${mode}`} onSubmit={submit}>
@@ -266,7 +271,7 @@ function LocalAuth({ onAuthenticated }: { onAuthenticated: (session: Session) =>
           <div className={mode === "register" ? "auth-field-grid" : ""}><label>Senha<div className="input-with-icon"><LockKeyhole /><input name="password" required type={showPassword ? "text" : "password"} minLength={mode === "register" ? 10 : 8} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={mode === "login" ? "Digite sua senha" : "Crie uma senha forte"} /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff /> : <Eye />}</button></div></label>{mode === "register" && <label>Confirmar senha<div className="input-with-icon"><LockKeyhole /><input required type={showPassword ? "text" : "password"} minLength={10} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repita a senha" /></div></label>}</div>
           {mode === "register" && <><div className="password-strength"><div><span style={{ width: `${passwordChecks.filter((item) => item.valid).length / passwordChecks.length * 100}%` }} /></div><small>{passwordChecks.map((item) => <span className={item.valid ? "valid" : ""} key={item.label}><Check /> {item.label}</span>)}</small></div><LegalConsent /></>}
           {mode === "login" && <div className="login-options"><label className="auth-check"><input name="remember" type="checkbox" /><span>Manter conectado neste dispositivo</span></label><button type="button" onClick={() => setDialog("recovery")}>Esqueci minha senha</button></div>}
-          <button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>{mode === "login" ? "Entrar no MeetFlow" : "Criar meu workspace"}<ArrowRight /></>}</button>
+          <button className="button button-primary button-wide auth-submit" disabled={busy}>{busy ? <Loader2 className="spin" /> : <>{mode === "login" ? (communityToken ? "Entrar e participar do grupo" : "Entrar no MeetFlow") : (communityToken ? "Criar empresa e participar" : "Criar meu workspace")}<ArrowRight /></>}</button>
         </form>
         </>}
         <small><ShieldCheck /> Seus dados são protegidos e não aparecem para outras empresas</small>
@@ -381,6 +386,8 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [story, setStory] = useState<TeamStatus | null>(null);
   const [channelToManage, setChannelToManage] = useState<Channel | null>(null);
+  const [channelToShare, setChannelToShare] = useState<Channel | null>(null);
+  const communityJoinAttempted = useRef(false);
   const canManageTeam = user.role === "OWNER" || user.role === "ADMIN";
 
   const showError = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : "Algo deu errado"), []);
@@ -418,6 +425,23 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
     const next = await api.notifications();
     setNotifications(Array.isArray(next) ? next : []);
   }, [api]);
+
+  useEffect(() => {
+    if (communityJoinAttempted.current || typeof window === "undefined") return;
+    const parameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const token = parameters.get("community_token");
+    if (!token) return;
+    communityJoinAttempted.current = true;
+    api.acceptCommunityInvitation(token).then((channel) => {
+      setChannels((current) => current.some((item) => item.id === channel.id) ? current.map((item) => item.id === channel.id ? channel : item) : [channel, ...current]);
+      setActiveChannel(channel.id);
+      setView("chat");
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    }).catch((reason) => {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      showError(reason);
+    });
+  }, [api, showError]);
 
   const markChannelRead = useCallback(async (channelId: string) => {
     if (!channelId) return;
@@ -462,7 +486,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
         if (!alive) return;
         const client = new Realtime({ ...api.realtimeAuthOptions(), closeOnUnload: true, echoMessages: false });
         const subscribed = channels.map((channel) => {
-          const realtimeChannel = client.channels.get(api.chatRealtimeChannel(user.organizationId, channel.id));
+          const realtimeChannel = client.channels.get(api.chatRealtimeChannel(channel.id));
           const listener = () => {
             if (!alive) return;
             void refreshChannels().catch(() => undefined);
@@ -548,7 +572,7 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
           <div className="content page-enter">
             {view === "inicio" && <Overview user={user} meetings={activeMeetings} channels={channels} statuses={statuses} members={members} onNavigate={switchView} onMeeting={() => setModal("meeting")} onStatus={() => setModal("status")} onStory={setStory} />}
             {view === "agenda" && <Agenda meetings={meetings} onCreate={() => setModal("meeting")} onCancel={async (meeting) => { const reason = window.prompt("Motivo do cancelamento:", "Reunião cancelada pela equipe"); if (!reason) return; try { await api.cancelMeeting(meeting.id, reason); await refresh(); } catch (cause) { showError(cause); } }} />}
-            {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={(id) => { setMessages([]); setActiveChannel(id); }} messages={messages} loading={messagesLoading} user={user} api={api} realtimeState={realtimeState} onNewChannel={() => setModal("channel")} onManageChannel={setChannelToManage} onRefresh={async () => { setMessagesLoading(true); try { setMessages(await api.messages(activeChannel)); await markChannelRead(activeChannel); } finally { setMessagesLoading(false); } }} onSend={async (content, replyToId) => { const sent = await api.sendMessage(activeChannel, content, replyToId); setMessages((current) => current.some((message) => message.id === sent.id) ? current : [...current, sent]); await markChannelRead(activeChannel); }} onEdit={async (messageId, content) => { const updated = await api.editMessage(activeChannel, messageId, content); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onDelete={async (messageId) => { const updated = await api.deleteMessage(activeChannel, messageId); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onError={showError} />}
+            {view === "chat" && <Chat channels={channels} activeChannel={activeChannel} onChannel={(id) => { setMessages([]); setActiveChannel(id); }} messages={messages} loading={messagesLoading} user={user} api={api} realtimeState={realtimeState} onNewChannel={() => setModal("channel")} onManageChannel={setChannelToManage} onShareChannel={setChannelToShare} onRefresh={async () => { setMessagesLoading(true); try { setMessages(await api.messages(activeChannel)); await markChannelRead(activeChannel); } finally { setMessagesLoading(false); } }} onSend={async (content, replyToId) => { const sent = await api.sendMessage(activeChannel, content, replyToId); setMessages((current) => current.some((message) => message.id === sent.id) ? current : [...current, sent]); await markChannelRead(activeChannel); }} onEdit={async (messageId, content) => { const updated = await api.editMessage(activeChannel, messageId, content); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onDelete={async (messageId) => { const updated = await api.deleteMessage(activeChannel, messageId); setMessages((current) => current.map((message) => message.id === updated.id ? updated : message)); }} onError={showError} />}
             {view === "status" && <Statuses statuses={statuses} api={api} user={user} onCreate={() => setModal("status")} onStory={setStory} onDelete={async (id) => { try { await api.deleteStatus(id); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "equipe" && <Team members={members} auditEvents={auditEvents} api={api} currentUserId={user.id} currentUserRole={user.role} canManage={canManageTeam} onAdd={() => setModal("member")} onRemove={async (id) => { if (!window.confirm("Desativar o acesso deste colaborador?")) return; try { await api.removeMember(id); await refresh(); } catch (cause) { showError(cause); } }} onRole={async (id, role) => { try { await api.changeMemberRole(id, role); await refresh(); } catch (cause) { showError(cause); } }} onResend={async (id) => { try { await api.resendInvitation(id); await refresh(); } catch (cause) { showError(cause); await refresh(); } }} onRevoke={async (id) => { if (!window.confirm("Cancelar este convite? O link enviado deixará de funcionar.")) return; try { await api.revokeInvitation(id); await refresh(); } catch (cause) { showError(cause); } }} />}
             {view === "configuracoes" && <ProfileSettings user={user} api={api} onUser={replaceUser} onLogout={logout} onDelete={() => setModal("delete")} onError={showError} />}
@@ -559,8 +583,9 @@ function LocalDashboard({ session, onSession }: { session: Session; onSession: (
       <AiAssistant api={api} firstName={user.name.split(" ")[0] || "Você"} />
       {!user.avatarUrl && !user.profilePhotoPromptedAt && <ProfilePhotoOnboarding user={user} api={api} onUser={replaceUser} onError={showError} />}
       {modal === "meeting" && <MeetingModal members={members.filter((member) => member.active)} onClose={() => setModal(null)} onSave={async (input) => { await api.createMeeting(input); setModal(null); await refresh(); }} onError={showError} />}
-      {modal === "channel" && <ChannelModal members={members.filter((member) => member.active && !member.invitation && member.id !== user.id)} onClose={() => setModal(null)} onSave={async (input) => { const channel = await api.createChannel(input); setModal(null); await refresh(); setActiveChannel(channel.id); }} onError={showError} />}
+      {modal === "channel" && <ChannelModal members={members.filter((member) => member.active && !member.invitation && member.id !== user.id)} canCreateCommunity={canManageTeam} onClose={() => setModal(null)} onSave={async (input) => { const channel = await api.createChannel(input); setModal(null); await refresh(); setActiveChannel(channel.id); if (channel.scope === "COMMUNITY") setChannelToShare(channel); }} onError={showError} />}
       {channelToManage && <ChannelMembersModal channel={channelToManage} members={members.filter((member) => member.active && !member.invitation && member.id !== user.id)} onClose={() => setChannelToManage(null)} onSave={async (memberIds) => { const updated = await api.updateChannelMembers(channelToManage.id, memberIds); setChannels((current) => current.map((channel) => channel.id === updated.id ? updated : channel)); setChannelToManage(null); await refreshChannels(); }} onError={showError} />}
+      {channelToShare && <CommunityShareModal channel={channelToShare} api={api} onClose={() => setChannelToShare(null)} onError={showError} />}
       {modal === "status" && <StatusModal onClose={() => setModal(null)} onSave={async (caption, file) => { await api.publishStatus(caption, file); setModal(null); await refresh(); }} onError={showError} />}
       {modal === "member" && <MemberModal currentUserRole={user.role} onClose={() => setModal(null)} onSave={async (input) => { await api.inviteMember(input); setModal(null); await refresh(); }} onError={showError} />}
       {modal === "delete" && <DeleteModal onClose={() => setModal(null)} onDelete={async () => { await api.deleteAccount(); logout(); }} onError={showError} />}
@@ -589,7 +614,7 @@ function Agenda({ meetings, onCreate, onCancel }: { meetings: Meeting[]; onCreat
   return <section className="subpage"><div className="page-head"><div><span className="section-kicker">PLANEJAMENTO</span><h2>Agenda empresarial</h2><p>Horários persistentes e protegidos contra conflitos.</p></div><button className="button button-primary" onClick={onCreate}><Plus /> Nova reunião</button></div><div className="calendar-summary"><div><CalendarDays /><span>Registros<strong>{meetings.length}</strong></span></div><div><CheckCircle2 /><span>Confirmadas<strong>{meetings.filter((m) => m.status !== "CANCELLED").length}</strong></span></div><p>Cada reunião criada fica salva no banco da empresa e estará disponível para toda a equipe.</p></div><section className="panel agenda-panel"><div className="meeting-list">{ordered.length ? ordered.map((meeting) => <MeetingRow key={meeting.id} meeting={meeting} onCancel={onCancel} />) : <Empty icon={CalendarDays} title="Nenhuma reunião" text="A agenda da empresa ainda está vazia." action="Criar reunião" onAction={onCreate} />}</div></section></section>;
 }
 
-function Chat({ channels, activeChannel, onChannel, messages, loading, user, api, realtimeState, onNewChannel, onManageChannel, onRefresh, onSend, onEdit, onDelete, onError }: { channels: Channel[]; activeChannel: string; onChannel: (id: string) => void; messages: ChatMessage[]; loading: boolean; user: AuthUser; api: MeetFlowApi; realtimeState: RealtimeState; onNewChannel: () => void; onManageChannel: (channel: Channel) => void; onRefresh: () => Promise<void>; onSend: (content: string, replyToId?: string) => Promise<void>; onEdit: (messageId: string, content: string) => Promise<void>; onDelete: (messageId: string) => Promise<void>; onError: (reason: unknown) => void }) {
+function Chat({ channels, activeChannel, onChannel, messages, loading, user, api, realtimeState, onNewChannel, onManageChannel, onShareChannel, onRefresh, onSend, onEdit, onDelete, onError }: { channels: Channel[]; activeChannel: string; onChannel: (id: string) => void; messages: ChatMessage[]; loading: boolean; user: AuthUser; api: MeetFlowApi; realtimeState: RealtimeState; onNewChannel: () => void; onManageChannel: (channel: Channel) => void; onShareChannel: (channel: Channel) => void; onRefresh: () => Promise<void>; onSend: (content: string, replyToId?: string) => Promise<void>; onEdit: (messageId: string, content: string) => Promise<void>; onDelete: (messageId: string) => Promise<void>; onError: (reason: unknown) => void }) {
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
   const [replying, setReplying] = useState<ChatMessage | null>(null);
@@ -641,8 +666,8 @@ function Chat({ channels, activeChannel, onChannel, messages, loading, user, api
   function channelButton(channel: Channel) {
     const privateConversation = channel.type === "DIRECT";
     return <button key={channel.id} className={`conversation${activeChannel === channel.id ? " active" : ""}`} onClick={() => onChannel(channel.id)}>
-      <span className={`channel-avatar${privateConversation ? " direct" : ""}`}>{privateConversation ? <LockKeyhole /> : <Hash />}</span>
-      <div><strong>{channel.name}</strong><small>{channel.lastMessagePreview || (privateConversation ? "Conversa privada" : channel.accessMode === "ALL" ? "Todos da empresa" : `${channel.members.length} participantes`)}</small></div>
+      <span className={`channel-avatar${privateConversation ? " direct" : ""}${channel.scope === "COMMUNITY" ? " community" : ""}`}>{privateConversation ? <LockKeyhole /> : channel.scope === "COMMUNITY" ? <Globe2 /> : <Hash />}</span>
+      <div><strong>{channel.name}</strong><small>{channel.lastMessagePreview || (privateConversation ? "Conversa privada" : channel.scope === "COMMUNITY" ? `${channel.members.length} participantes · entre empresas` : channel.accessMode === "ALL" ? "Todos da empresa" : `${channel.members.length} participantes`)}</small></div>
       {channel.unreadCount > 0 && <em className="unread-badge">{channel.unreadCount > 99 ? "99+" : channel.unreadCount}</em>}
     </button>;
   }
@@ -656,10 +681,10 @@ function Chat({ channels, activeChannel, onChannel, messages, loading, user, api
       </div>
     </aside>
     <article className="chat-room">
-      <header><div><span className={`channel-avatar${current?.type === "DIRECT" ? " direct" : ""}`}>{current?.type === "DIRECT" ? <LockKeyhole /> : <Hash />}</span><div><strong>{current?.name ?? "Selecione uma conversa"}</strong><small className={`chat-sync ${realtimeState}`}>{current?.type === "DIRECT" ? <><LockKeyhole /> somente vocês dois</> : current?.accessMode === "ALL" ? <><Users /> todos os colaboradores ativos</> : <><Users /> {current?.members.length ?? 0} participantes</>}</small></div></div><div className="chat-head-actions">{current?.canManageMembers && <button className="chat-refresh" onClick={() => onManageChannel(current)} title="Gerenciar participantes" aria-label="Gerenciar participantes"><Settings /></button>}<button className="chat-refresh" onClick={() => void onRefresh().catch(onError)} disabled={loading || !current} title={realtimeState === "live" ? "Atualizar agora · conectado em tempo real" : "Atualizar mensagens · sincronização automática"} aria-label="Atualizar mensagens"><RefreshCw className={loading ? "spin" : ""} /></button></div></header>
+      <header><div><span className={`channel-avatar${current?.type === "DIRECT" ? " direct" : ""}${current?.scope === "COMMUNITY" ? " community" : ""}`}>{current?.type === "DIRECT" ? <LockKeyhole /> : current?.scope === "COMMUNITY" ? <Globe2 /> : <Hash />}</span><div><strong>{current?.name ?? "Selecione uma conversa"}</strong><small className={`chat-sync ${realtimeState}`}>{current?.type === "DIRECT" ? <><LockKeyhole /> somente vocês dois</> : current?.scope === "COMMUNITY" ? <><Globe2 /> {current.members.length} pessoas de diferentes empresas</> : current?.accessMode === "ALL" ? <><Users /> todos os colaboradores ativos</> : <><Users /> {current?.members.length ?? 0} participantes</>}</small></div></div><div className="chat-head-actions">{current?.canInviteExternal && <button className="chat-share" onClick={() => onShareChannel(current)} title="Compartilhar grupo" aria-label="Compartilhar grupo"><Share2 /><span>Convidar</span></button>}{current?.canManageMembers && <button className="chat-refresh" onClick={() => onManageChannel(current)} title="Gerenciar participantes" aria-label="Gerenciar participantes"><Settings /></button>}<button className="chat-refresh" onClick={() => void onRefresh().catch(onError)} disabled={loading || !current} title={realtimeState === "live" ? "Atualizar agora · conectado em tempo real" : "Atualizar mensagens · sincronização automática"} aria-label="Atualizar mensagens"><RefreshCw className={loading ? "spin" : ""} /></button></div></header>
       <div className="messages" ref={messageListRef}><div className="day-divider"><span>{loading ? "Atualizando" : "Mensagens"}</span></div>{messages.length ? messages.map((message) => {
-        const canManage = !message.deleted && (message.senderId === user.id || (current?.type !== "DIRECT" && (user.role === "OWNER" || user.role === "ADMIN")));
-        return <div key={message.id} className={`message-row${message.senderId === user.id ? " own" : ""}${message.deleted ? " deleted" : ""}`}><Avatar name={message.senderName} api={api} small /><div className="message-content"><span><strong>{message.senderName}</strong><time>{formatTime(message.createdAt)}</time>{message.editedAt && !message.deleted && <small>editada</small>}</span><div className="message-bubble">{message.replyTo && <div className="reply-quote"><CornerUpLeft /><span><strong>{message.replyTo.senderName}</strong>{message.replyTo.deleted ? "Mensagem removida" : message.replyTo.content}</span></div>}<p>{message.deleted ? "Esta mensagem foi removida." : message.content}</p>{!message.deleted && <div className="message-actions"><button onClick={() => beginReply(message)} title="Responder" aria-label="Responder"><CornerUpLeft /></button>{message.senderId === user.id && <button onClick={() => beginEdit(message)} title="Editar" aria-label="Editar"><Pencil /></button>}{canManage && <button onClick={() => void remove(message)} title="Excluir" aria-label="Excluir"><Trash2 /></button>}</div>}</div></div></div>;
+        const canManage = !message.deleted && (message.senderId === user.id || Boolean(current?.canModerate));
+        return <div key={message.id} className={`message-row${message.senderId === user.id ? " own" : ""}${message.deleted ? " deleted" : ""}`}><Avatar name={message.senderName} api={api} small /><div className="message-content"><span><strong>{message.senderName}</strong>{current?.scope === "COMMUNITY" && message.senderOrganizationName && <small className="message-company">{message.senderOrganizationName}</small>}<time>{formatTime(message.createdAt)}</time>{message.editedAt && !message.deleted && <small>editada</small>}</span><div className="message-bubble">{message.replyTo && <div className="reply-quote"><CornerUpLeft /><span><strong>{message.replyTo.senderName}</strong>{message.replyTo.deleted ? "Mensagem removida" : message.replyTo.content}</span></div>}<p>{message.deleted ? "Esta mensagem foi removida." : message.content}</p>{!message.deleted && <div className="message-actions"><button onClick={() => beginReply(message)} title="Responder" aria-label="Responder"><CornerUpLeft /></button>{message.senderId === user.id && <button onClick={() => beginEdit(message)} title="Editar" aria-label="Editar"><Pencil /></button>}{canManage && <button onClick={() => void remove(message)} title="Excluir" aria-label="Excluir"><Trash2 /></button>}</div>}</div></div></div>;
       }) : !loading && <Empty icon={current?.type === "DIRECT" ? LockKeyhole : MessageCircle} title="Comece a conversa" text={current?.type === "DIRECT" ? "Somente vocês dois podem ler e responder aqui." : "As mensagens aparecerão somente para os participantes deste canal."} />}<div ref={endRef} /></div>
       <div className="composer-area">{(replying || editing) && <div className={`composer-context${editing ? " editing" : ""}`}><span>{editing ? <Pencil /> : <CornerUpLeft />}</span><div><strong>{editing ? "Editando sua mensagem" : `Respondendo a ${replying?.senderName}`}</strong><small>{editing?.content || replying?.content}</small></div><button onClick={() => { setEditing(null); setReplying(null); setContent(""); }} aria-label="Cancelar"><X /></button></div>}<form className="composer" onSubmit={send}><textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && (replying || editing)) { setReplying(null); setEditing(null); setContent(""); } else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={1} maxLength={4000} placeholder={editing ? "Edite sua mensagem" : current?.type === "DIRECT" ? `Mensagem para ${current.name}` : `Mensagem em #${current?.name ?? "canal"}`} disabled={!current || sending} aria-label="Escrever mensagem" /><span>{content.length}/4000</span><button className="send-button" aria-label={editing ? "Salvar edição" : "Enviar mensagem"} disabled={!content.trim() || sending}>{sending ? <Loader2 className="spin" /> : editing ? <Check /> : <Send />}</button></form></div>
     </article>
@@ -679,6 +704,9 @@ function auditDescription(event: AuditEvent) {
   if (event.action === "TEAM_MEMBER_ROLE_CHANGED") return `alterou o acesso de ${email} para ${roleName(String(event.metadata.role ?? "MEMBER") as UserRole)}`;
   if (event.action === "TEAM_MEMBER_DEACTIVATED") return `desativou o acesso de ${email}`;
   if (event.action === "TEAM_INVITATION_EMAIL_FAILED") return `registrou uma falha ao convidar ${email}`;
+  if (event.action === "COMMUNITY_CHANNEL_CREATED") return `criou um grupo entre empresas`;
+  if (event.action === "COMMUNITY_INVITATION_CREATED") return `gerou um novo link para um grupo entre empresas`;
+  if (event.action === "COMMUNITY_INVITATION_ACCEPTED") return `${String(event.metadata.name ?? "Uma pessoa")} entrou no grupo pela empresa ${String(event.metadata.organizationName ?? "convidada")}`;
   return "realizou uma alteração administrativa";
 }
 
@@ -772,8 +800,8 @@ function MeetingModal({ members, onClose, onSave, onError }: { members: TeamMemb
   return <div className="modal-backdrop"><section className="modal"><header><div><span className="section-kicker">AGENDA EMPRESARIAL</span><h2>Nova reunião</h2></div><button onClick={onClose}><X /></button></header><form onSubmit={submit}><label>Título<input name="title" required maxLength={160} placeholder="Alinhamento semanal" /></label><label>Responsável<select name="ownerId" required value={ownerId} onChange={(event) => setOwnerId(event.target.value)}>{members.map((member) => <option value={member.id} key={member.id}>{member.name} — {member.jobTitle}</option>)}</select></label><div className="form-row two"><label>Início<input name="startAt" type="datetime-local" required defaultValue={start} /></label><label>Término<input name="endAt" type="datetime-local" required defaultValue={end} /></label></div><div className="form-row two"><label>Formato<select name="mode"><option value="VIDEO">Videoconferência</option><option value="IN_PERSON">Presencial</option></select></label><label>Local ou link<input name="location" maxLength={300} placeholder="Sala 2 ou link" /></label></div><div className="meeting-email-panel"><div className="meeting-email-head"><Mail /><div><strong>Quem receberá os avisos?</strong><span>O responsável e os colaboradores marcados receberão confirmação e lembretes por e-mail.</span></div></div><div className="meeting-invite-list">{members.map((member) => { const responsible = member.id === ownerId; const checked = responsible || invitedMemberIds.has(member.id); return <label className={checked ? "selected" : ""} key={member.id}><input type="checkbox" checked={checked} disabled={responsible} onChange={() => toggleMember(member.id)} /><span className="avatar avatar-fallback">{initials(member.name)}</span><span><strong>{member.name}</strong><small>{responsible ? "Responsável · aviso automático" : member.email}</small></span><Check /></label>; })}</div></div><label>Outros convidados por e-mail<input name="guests" type="text" inputMode="email" placeholder="ana@cliente.com, joao@parceiro.com" /><span className="field-help">Separe mais de um e-mail por vírgula.</span></label><label>Observações<textarea name="notes" rows={3} maxLength={2000} placeholder="Pauta e informações importantes" /></label><div className="modal-note"><ShieldCheck /> O sistema evita conflitos de horário e prepara lembretes de 24 horas e 1 hora.</div><footer><button type="button" className="button button-soft" onClick={onClose}>Cancelar</button><button className="button button-primary" disabled={busy || !ownerId}>{busy && <Loader2 className="spin" />}Criar reunião</button></footer></form></section></div>;
 }
 
-function ChannelModal({ members, onClose, onSave, onError }: { members: TeamMember[]; onClose: () => void; onSave: (input: { name?: string; type: "GROUP" | "DIRECT"; memberIds: string[] }) => Promise<void>; onError: (reason: unknown) => void }) {
-  const [kind, setKind] = useState<"GROUP" | "DIRECT">("GROUP");
+function ChannelModal({ members, canCreateCommunity, onClose, onSave, onError }: { members: TeamMember[]; canCreateCommunity: boolean; onClose: () => void; onSave: (input: { name?: string; type: "GROUP" | "DIRECT" | "COMMUNITY"; memberIds: string[] }) => Promise<void>; onError: (reason: unknown) => void }) {
+  const [kind, setKind] = useState<"GROUP" | "DIRECT" | "COMMUNITY">("GROUP");
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
@@ -791,24 +819,68 @@ function ChannelModal({ members, onClose, onSave, onError }: { members: TeamMemb
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLocalError("");
-    if (!members.length) { setLocalError("Convide um colaborador e aguarde o aceite antes de criar uma conversa"); return; }
-    if (!selected.size) { setLocalError(kind === "DIRECT" ? "Escolha uma pessoa para a conversa privada" : "Escolha pelo menos um participante para o grupo"); return; }
+    if (kind !== "COMMUNITY" && !members.length) { setLocalError("Convide um colaborador e aguarde o aceite antes de criar esta conversa"); return; }
+    if (kind !== "COMMUNITY" && !selected.size) { setLocalError(kind === "DIRECT" ? "Escolha uma pessoa para a conversa privada" : "Escolha pelo menos um participante para o grupo"); return; }
     if (kind === "DIRECT" && selected.size !== 1) { setLocalError("A conversa privada deve ter somente uma pessoa além de você"); return; }
-    if (kind === "GROUP" && !name.trim()) { setLocalError("Dê um nome ao grupo"); return; }
+    if (kind !== "DIRECT" && !name.trim()) { setLocalError("Dê um nome ao grupo"); return; }
     setBusy(true);
-    try { await onSave({ name: kind === "GROUP" ? name.trim() : undefined, type: kind, memberIds: [...selected] }); }
+    try { await onSave({ name: kind === "DIRECT" ? undefined : name.trim(), type: kind, memberIds: kind === "COMMUNITY" ? [] : [...selected] }); }
     catch (reason) { setLocalError(reason instanceof Error ? reason.message : "Não foi possível criar a conversa"); onError(reason); }
     finally { setBusy(false); }
   }
 
-  return <div className="modal-backdrop"><section className="modal conversation-modal"><header><div><span className="section-kicker">COMUNICAÇÃO SEGURA</span><h2>Nova conversa</h2><p>Crie um grupo selecionado ou fale em particular com alguém da empresa.</p></div><button onClick={onClose} aria-label="Fechar"><X /></button></header><form onSubmit={submit}>
-    <div className="conversation-kind" role="tablist" aria-label="Tipo de conversa"><button type="button" role="tab" aria-selected={kind === "GROUP"} className={kind === "GROUP" ? "active" : ""} onClick={() => { setKind("GROUP"); setSelected(new Set()); }}><span><Users /></span><div><strong>Novo grupo</strong><small>Escolha várias pessoas</small></div><Check /></button><button type="button" role="tab" aria-selected={kind === "DIRECT"} className={kind === "DIRECT" ? "active" : ""} onClick={() => { setKind("DIRECT"); setSelected(new Set()); }}><span><LockKeyhole /></span><div><strong>Conversa privada</strong><small>Somente duas pessoas</small></div><Check /></button></div>
-    {kind === "GROUP" && <label>Nome do grupo<input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} placeholder="Ex.: Projeto comercial" autoFocus /></label>}
-    <div className="participant-selector"><div><span>{kind === "DIRECT" ? "Escolha uma pessoa" : "Participantes"}</span><em>{selected.size} selecionado{selected.size === 1 ? "" : "s"}</em></div>{members.length ? <div className="participant-list">{members.map((member) => { const checked = selected.has(member.id); return <button type="button" className={checked ? "selected" : ""} onClick={() => choose(member.id)} key={member.id} aria-pressed={checked}><span className="avatar avatar-fallback">{initials(member.name)}</span><span><strong>{member.name}</strong><small>{member.jobTitle}</small></span><i>{checked ? <Check /> : kind === "DIRECT" ? <LockKeyhole /> : <Plus />}</i></button>; })}</div> : <div className="participant-empty"><UserPlus /><strong>Nenhum colaborador ativo</strong><span>Somente convites aceitos aparecem nesta lista.</span></div>}</div>
+  return <div className="modal-backdrop"><section className="modal conversation-modal"><header><div><span className="section-kicker">COMUNICAÇÃO SEGURA</span><h2>Nova conversa</h2><p>Converse com sua equipe ou crie uma comunidade entre empresas.</p></div><button onClick={onClose} aria-label="Fechar"><X /></button></header><form onSubmit={submit}>
+    <div className="conversation-kind conversation-kind-three" role="tablist" aria-label="Tipo de conversa"><button type="button" role="tab" aria-selected={kind === "GROUP"} className={kind === "GROUP" ? "active" : ""} onClick={() => { setKind("GROUP"); setSelected(new Set()); }}><span><Users /></span><div><strong>Grupo interno</strong><small>Colaboradores da empresa</small></div><Check /></button><button type="button" role="tab" aria-selected={kind === "DIRECT"} className={kind === "DIRECT" ? "active" : ""} onClick={() => { setKind("DIRECT"); setSelected(new Set()); }}><span><LockKeyhole /></span><div><strong>Conversa privada</strong><small>Somente duas pessoas</small></div><Check /></button>{canCreateCommunity && <button type="button" role="tab" aria-selected={kind === "COMMUNITY"} className={kind === "COMMUNITY" ? "active" : ""} onClick={() => { setKind("COMMUNITY"); setSelected(new Set()); }}><span><Globe2 /></span><div><strong>Entre empresas</strong><small>Participantes entram por link</small></div><Check /></button>}</div>
+    {kind !== "DIRECT" && <label>Nome do grupo<input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} placeholder={kind === "COMMUNITY" ? "Ex.: Comunidade de empreendedores" : "Ex.: Projeto comercial"} autoFocus /></label>}
+    {kind === "COMMUNITY" ? <div className="community-explainer"><Globe2 /><div><strong>Cada participante mantém a própria empresa</strong><p>Após criar o grupo, você receberá um único link para compartilhar. A pessoa entra com a própria conta e somente esta conversa será compartilhada.</p></div></div> : <div className="participant-selector"><div><span>{kind === "DIRECT" ? "Escolha uma pessoa" : "Participantes"}</span><em>{selected.size} selecionado{selected.size === 1 ? "" : "s"}</em></div>{members.length ? <div className="participant-list">{members.map((member) => { const checked = selected.has(member.id); return <button type="button" className={checked ? "selected" : ""} onClick={() => choose(member.id)} key={member.id} aria-pressed={checked}><span className="avatar avatar-fallback">{initials(member.name)}</span><span><strong>{member.name}</strong><small>{member.jobTitle}</small></span><i>{checked ? <Check /> : kind === "DIRECT" ? <LockKeyhole /> : <Plus />}</i></button>; })}</div> : <div className="participant-empty"><UserPlus /><strong>Nenhum colaborador ativo</strong><span>Somente convites aceitos aparecem nesta lista.</span></div>}</div>}
     {localError && <div className="form-error modal-error"><AlertTriangle />{localError}</div>}
-    <div className="modal-note"><ShieldCheck /> Convites pendentes e pessoas de outras empresas nunca entram nas conversas.</div>
-    <footer><button type="button" className="button button-soft" onClick={onClose}>Cancelar</button><button className="button button-primary" disabled={busy || !members.length}>{busy && <Loader2 className="spin" />}{kind === "DIRECT" ? "Abrir conversa privada" : "Criar grupo"}</button></footer>
+    <div className="modal-note"><ShieldCheck /> {kind === "COMMUNITY" ? "Agenda, equipe, IA e informações internas de cada empresa continuam privadas." : "Somente as pessoas selecionadas terão acesso a esta conversa."}</div>
+    <footer><button type="button" className="button button-soft" onClick={onClose}>Cancelar</button><button className="button button-primary" disabled={busy || (kind !== "COMMUNITY" && !members.length)}>{busy && <Loader2 className="spin" />}{kind === "DIRECT" ? "Abrir conversa privada" : kind === "COMMUNITY" ? "Criar grupo entre empresas" : "Criar grupo"}</button></footer>
   </form></section></div>;
+}
+
+function CommunityShareModal({ channel, api, onClose, onError }: { channel: Channel; api: MeetFlowApi; onClose: () => void; onError: (reason: unknown) => void }) {
+  const [url, setUrl] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [busy, setBusy] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  const generate = useCallback(async () => {
+    setBusy(true);
+    setCopied(false);
+    try {
+      const invitation = await api.createCommunityInvitation(channel.id);
+      setUrl(invitation.url);
+      setExpiresAt(invitation.expiresAt);
+    } catch (reason) { onError(reason); }
+    finally { setBusy(false); }
+  }, [api, channel.id, onError]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void generate(), 0);
+    return () => window.clearTimeout(timer);
+  }, [generate]);
+
+  async function copyLink() {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2200);
+    } catch { onError(new Error("Não foi possível copiar automaticamente. Selecione o link e copie manualmente.")); }
+  }
+
+  async function shareLink() {
+    if (!url) return;
+    if (navigator.share) {
+      try { await navigator.share({ title: `Grupo ${channel.name} no MeetFlow`, text: "Entre no nosso grupo entre empresas no MeetFlow.", url }); }
+      catch (reason) { if (reason instanceof DOMException && reason.name === "AbortError") return; onError(reason); }
+      return;
+    }
+    await copyLink();
+  }
+
+  return <div className="modal-backdrop"><section className="modal modal-small community-share-modal"><header><div><span className="section-kicker">GRUPO ENTRE EMPRESAS</span><h2>Compartilhar “{channel.name}”</h2><p>Um único link para todos os participantes.</p></div><button onClick={onClose} aria-label="Fechar"><X /></button></header><div className="community-share-hero"><span><Link2 /></span><div><strong>Convite protegido</strong><p>Cada pessoa entra com a própria conta e continua como proprietária da empresa dela.</p></div></div>{busy ? <div className="community-link-loading"><Loader2 className="spin" /><span>Preparando o link seguro...</span></div> : url ? <><label className="community-link-field">Link do grupo<div><input readOnly value={url} onFocus={(event) => event.currentTarget.select()} aria-label="Link do grupo" /><button type="button" onClick={() => void copyLink()}><Copy />{copied ? "Copiado" : "Copiar"}</button></div></label><div className="community-share-facts"><span><ShieldCheck /> Somente este grupo será compartilhado</span><span><Users /> Até 100 participantes</span><span><Clock3 /> Válido até {formatDate(expiresAt)}</span></div></> : <div className="form-error"><AlertTriangle />Não foi possível criar o link. Tente novamente.</div>}<div className="community-privacy-note"><LockKeyhole /><p><strong>Os dados das empresas não se misturam.</strong> Agenda, equipe, IA, status e configurações continuam separados.</p></div><footer><button type="button" className="button button-soft" onClick={onClose}>Fechar</button>{!url && !busy ? <button type="button" className="button button-primary" onClick={() => void generate()}><RefreshCw /> Tentar novamente</button> : <button type="button" className="button button-primary" disabled={!url || busy} onClick={() => void shareLink()}><Share2 /> Compartilhar link</button>}</footer></section></div>;
 }
 
 function ChannelMembersModal({ channel, members, onClose, onSave, onError }: { channel: Channel; members: TeamMember[]; onClose: () => void; onSave: (memberIds: string[]) => Promise<void>; onError: (reason: unknown) => void }) {
