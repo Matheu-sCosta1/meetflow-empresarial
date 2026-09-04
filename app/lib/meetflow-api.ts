@@ -33,8 +33,11 @@ export type Channel = {
   name: string;
   type: "GROUP" | "DIRECT";
   accessMode: "ALL" | "SELECTED";
-  members: Array<{ id: string; name: string; avatarUrl?: string }>;
+  scope: "ORGANIZATION" | "COMMUNITY";
+  members: Array<{ id: string; name: string; avatarUrl?: string; organizationName?: string }>;
   canManageMembers: boolean;
+  canInviteExternal: boolean;
+  canModerate: boolean;
   unreadCount: number;
   lastMessageAt?: string;
   lastMessagePreview?: string;
@@ -46,6 +49,7 @@ export type ChatMessage = {
   channelId: string;
   senderId: string;
   senderName: string;
+  senderOrganizationName?: string;
   content: string;
   messageType: string;
   attachmentUrl?: string;
@@ -98,6 +102,7 @@ export type AuditEvent = {
 };
 export type AiConversationMessage = { role: "user" | "assistant"; content: string };
 export type AiChatResponse = { message: string; remaining: number; limit: number; sources: string[] };
+export type CommunityInvitation = { id: string; url: string; expiresAt: string; maxUses: number };
 
 function defaultApiUrl() {
   const configured = process.env.NEXT_PUBLIC_API_URL?.trim();
@@ -160,8 +165,14 @@ export class MeetFlowApi {
   }
 
   channels() { return this.request<Channel[]>("/chat/channels"); }
-  createChannel(input: { name?: string; type: "GROUP" | "DIRECT"; memberIds: string[] }) {
+  createChannel(input: { name?: string; type: "GROUP" | "DIRECT" | "COMMUNITY"; memberIds: string[] }) {
     return this.request<Channel>("/chat/channels", { method: "POST", body: JSON.stringify(input) });
+  }
+  createCommunityInvitation(channelId: string) {
+    return this.request<CommunityInvitation>(`/chat/channels/${channelId}/invite`, { method: "POST" });
+  }
+  acceptCommunityInvitation(token: string) {
+    return this.request<Channel>("/chat/community-invitations/accept", { method: "POST", body: JSON.stringify({ token }) });
   }
   updateChannelMembers(channelId: string, memberIds: string[]) {
     return this.request<Channel>(`/chat/channels/${channelId}/members`, { method: "PATCH", body: JSON.stringify({ memberIds }) });
@@ -201,8 +212,8 @@ export class MeetFlowApi {
       authHeaders: this.token ? { Authorization: `Bearer ${this.token}` } : undefined,
     };
   }
-  chatRealtimeChannel(organizationId: string, channelId: string) {
-    return `meetflow:${organizationId}:chat:${channelId}`;
+  chatRealtimeChannel(channelId: string) {
+    return `meetflow:chat:${channelId}`;
   }
   notificationRealtimeChannel(organizationId: string, userId: string) {
     return `meetflow:${organizationId}:user:${userId}`;
