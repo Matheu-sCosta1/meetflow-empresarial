@@ -20,9 +20,25 @@ test("keeps the Ably API key on the server and issues subscribe-only user tokens
 });
 
 test("provides a safe polling fallback when realtime is not configured", () => {
-  assert.match(dashboard, /realtimeState === "live" \? 30000 : 5000/);
+  assert.match(dashboard, /realtimeState === "live" \? 30000 : 2500/);
   assert.match(dashboard, /setRealtimeState\("fallback"\)/);
   assert.match(router, /realtimeConfigured\(\) \? "configured" : "fallback"/);
+});
+
+test("renders outgoing messages immediately and keeps realtime subscriptions stable", () => {
+  assert.match(dashboard, /deliveryState: "SENDING"/);
+  assert.match(dashboard, /pending-\$\{user\.id\}-\$\{Date\.now\(\)\}/);
+  assert.match(dashboard, /activeChannelRef\.current === channel\.id/);
+  assert.match(dashboard, /document\.addEventListener\("visibilitychange", visible\)/);
+  assert.doesNotMatch(dashboard, /\}, \[activeChannel, api, channelIds/);
+});
+
+test("provides separate, touch-friendly chat navigation on phones", () => {
+  assert.match(dashboard, /mobile-chat-room-open/);
+  assert.match(dashboard, /chat-mobile-back/);
+  assert.match(dashboard, /Buscar conversa/);
+  assert.match(dashboard, /ENTRE EMPRESAS/);
+  assert.match(dashboard, /SUA EMPRESA/);
 });
 
 test("supports professional chat actions and unread tracking", () => {
