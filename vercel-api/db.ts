@@ -202,6 +202,7 @@ const schema = [
     updated_at TIMESTAMPTZ NOT NULL
   )`,
   `ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS access_mode VARCHAR(20) NOT NULL DEFAULT 'ALL'`,
+  `ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS scope VARCHAR(20) NOT NULL DEFAULT 'ORGANIZATION'`,
   `CREATE TABLE IF NOT EXISTS chat_channel_members (
     channel_id UUID NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -210,6 +211,19 @@ const schema = [
     PRIMARY KEY(channel_id, user_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_chat_channel_members_user ON chat_channel_members(user_id, channel_id)`,
+  `CREATE TABLE IF NOT EXISTS chat_channel_invitations (
+    id UUID PRIMARY KEY,
+    channel_id UUID NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+    created_by_id UUID NOT NULL REFERENCES users(id),
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    max_uses INTEGER NOT NULL DEFAULT 100,
+    use_count INTEGER NOT NULL DEFAULT 0,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_chat_channel_invitations_channel ON chat_channel_invitations(channel_id, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS chat_messages (
     id UUID PRIMARY KEY,
     channel_id UUID NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
